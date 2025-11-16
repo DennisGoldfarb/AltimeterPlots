@@ -101,7 +101,7 @@ resolve_output <- function(output_map, candidates) {
   NULL
 }
 
-evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200) {
+evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200, max_fragments = 24) {
   fragments <- predictions$fragments
   coeff_matrix <- predictions$coefficients
   knots <- predictions$knots
@@ -109,6 +109,10 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
   if (length(fragments) == 0 || nrow(coeff_matrix) == 0) {
     return(data.frame())
   }
+
+  fragments_to_use <- seq_len(min(length(fragments), max_fragments))
+  fragments <- fragments[fragments_to_use]
+  coeff_matrix <- coeff_matrix[fragments_to_use, , drop = FALSE]
 
   if (length(x_range) != 2 || any(is.na(x_range))) {
     return(data.frame())
@@ -237,12 +241,9 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
-    facet_count <- length(unique(curve_data$Fragment))
-    grid_size <- max(1, ceiling(sqrt(facet_count)))
-
     plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
-      facet_wrap(~Fragment, scales = "free_y", nrow = grid_size, ncol = grid_size) +
+      facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
       scale_x_continuous(breaks = c(20, 30, 40)) +
       labs(x = "m/z", y = "Intensity", title = "Altimeter fragment spline curves") +
       theme_minimal() +
