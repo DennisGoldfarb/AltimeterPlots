@@ -223,8 +223,11 @@ extract_fragment_axis_map <- function(plotly_traces, fragments) {
     return(axis_map)
   }
 
+  valid_types <- c("scatter", "scattergl")
   line_traces <- Filter(
-    function(trace) identical(trace$type, "scatter") && identical(trace$mode, "lines"),
+    function(trace) {
+      (trace$type %||% "") %in% valid_types && identical(trace$mode, "lines")
+    },
     plotly_traces
   )
 
@@ -298,7 +301,7 @@ build_fragment_point_traces <- function(nce_value, fragments, fragment_values, a
     axes <- axis_map[[fragment]]
     target_value <- fragment_values[[fragment]]
 
-    if (is.null(axes)) {
+    if (is.null(axes) || is.na(target_value)) {
       return(NULL)
     }
 
