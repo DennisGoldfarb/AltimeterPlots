@@ -226,7 +226,10 @@ extract_fragment_axis_map <- function(plotly_traces, fragments) {
   valid_types <- c("scatter", "scattergl")
   line_traces <- Filter(
     function(trace) {
-      (trace$type %||% "") %in% valid_types && identical(trace$mode, "lines")
+      trace_type <- trace$type %||% ""
+      trace_mode <- trace$mode
+
+      trace_type %in% valid_types && (is.null(trace_mode) || grepl("lines", trace_mode, fixed = TRUE))
     },
     plotly_traces
   )
@@ -277,7 +280,7 @@ build_vertical_shapes <- function(nce_value, fragments, fragment_ranges, fragmen
     range_vals <- fragment_ranges[[fragment]]
     target_value <- fragment_values[[fragment]]
 
-    if (is.null(axes) || is.null(range_vals) || length(range_vals) < 2 || is.na(target_value)) {
+    if (is.null(axes) || is.null(range_vals) || length(range_vals) < 2 || any(!is.finite(range_vals))) {
       return(NULL)
     }
 
@@ -287,7 +290,7 @@ build_vertical_shapes <- function(nce_value, fragments, fragment_ranges, fragmen
       x1 = nce_value,
       xref = axes$xref,
       y0 = range_vals[1],
-      y1 = target_value,
+      y1 = range_vals[2],
       yref = axes$yref,
       line = list(color = "#7a7a7a", dash = "dash", width = 1)
     )
