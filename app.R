@@ -235,22 +235,27 @@ server <- function(input, output, session) {
     }
   })
 
-  output$fragment_plot <- renderPlotly({
-    req(input$nce)
+  curve_data <- reactive({
     preds <- predictions()
     req(preds)
 
     if (identical(preds$status, "error")) {
+      return(data.frame())
+    }
+
+    evaluate_fragment_curves(preds$data)
+  })
+
+  output$fragment_plot <- renderPlotly({
+    req(input$nce)
+
+    curve_data_df <- curve_data()
+
+    if (nrow(curve_data_df) == 0) {
       return(NULL)
     }
 
-    curve_data <- evaluate_fragment_curves(preds$data)
-
-    if (nrow(curve_data) == 0) {
-      return(NULL)
-    }
-
-    plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
+    plot <- ggplot(curve_data_df, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
       geom_vline(xintercept = input$nce, color = "#d95f02", linetype = "dashed") +
       facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
