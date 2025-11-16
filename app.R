@@ -8,6 +8,14 @@ library(shiny)
 library(httr)
 library(jsonlite)
 
+`%||%` <- function(x, y) {
+  if (is.null(x) || (length(x) == 1 && is.na(x))) {
+    y
+  } else {
+    x
+  }
+}
+
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
 
 # Helper that issues an HTTP inference request for a single peptide/charge pair
@@ -168,7 +176,10 @@ server <- function(input, output, session) {
     preds <- predictions()
     req(preds)
 
-    validate(need(identical(preds$status, "success"), preds$message))
+    validate(need(
+      identical(preds$status, "success"),
+      preds$message %||% "Prediction request failed."
+    ))
     preds$data$table
   }, striped = TRUE, spacing = "s")
 
@@ -176,7 +187,10 @@ server <- function(input, output, session) {
     preds <- predictions()
     req(preds)
 
-    validate(need(identical(preds$status, "success"), preds$message))
+    validate(need(
+      identical(preds$status, "success"),
+      preds$message %||% "Prediction request failed."
+    ))
     knots <- preds$data$knots
 
     if (length(knots) == 0) {
