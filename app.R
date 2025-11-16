@@ -57,6 +57,9 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
+      h4("Shared spline knots"),
+      uiOutput("knot_vector"),
+      h4("Fragment spline coefficients"),
       tableOutput("prediction_table")
     )
   )
@@ -81,6 +84,44 @@ server <- function(input, output, session) {
     })
   }, ignoreNULL = TRUE)
 
+  parse_prediction_response <- function(raw_prediction) {
+    stopifnot(is.data.frame(raw_prediction))
+
+    locate_column <- function(candidates) {
+      matched <- intersect(candidates, names(raw_prediction))
+      validate(need(length(matched) > 0, paste(
+        "Prediction response is missing expected columns:",
+        paste(candidates, collapse = ", ")
+      )))
+      matched[[1]]
+    }
+
+    knot_col <- locate_column(c("knot_vector", "knots", "spline_knots"))
+    coef_col <- locate_column(c("coefficients", "spline_coefficients"))
+
+    knot_vector <- raw_prediction[[knot_col]][[1]]
+    validate(need(length(knot_vector) > 0, "Koina response did not include knot values."))
+
+    coefficient_strings <- vapply(raw_prediction[[coef_col]], function(coeffs) {
+      validate(need(length(coeffs) == 4, "Each fragment should provide 4 coefficients."))
+      paste(formatC(coeffs, digits = 6, format = "fg", flag = "-"), collapse = ", ")
+    }, character(1))
+
+    fragments <- raw_prediction
+    fragments[[knot_col]] <- NULL
+    fragments[[coef_col]] <- coefficient_strings
+
+    list(knots = knot_vector, fragments = fragments, coefficient_column = coef_col)
+  }
+
+  parsed_predictions <- reactive({
+    preds <- predictions()
+    req(preds)
+
+    validate(need(identical(preds$status, "success"), preds$message))
+    parse_prediction_response(preds$data)
+  })
+
   output$status <- renderUI({
     preds <- predictions()
     req(preds)
@@ -92,12 +133,20 @@ server <- function(input, output, session) {
     }
   })
 
-  output$prediction_table <- renderTable({
-    preds <- predictions()
-    req(preds)
+  output$knot_vector <- renderUI({
+    parsed <- parsed_predictions()
+    req(parsed$knots)
 
-    validate(need(identical(preds$status, "success"), preds$message))
-    preds$data
+    tags$ul(
+      lapply(parsed$knots, function(value) {
+        tags$li(format(value, digits = 6))
+      })
+    )
+  })
+
+  output$prediction_table <- renderTable({
+    parsed <- parsed_predictions()
+    parsed$fragments
   })
 }
 
