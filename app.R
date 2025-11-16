@@ -7,6 +7,9 @@
 library(shiny)
 library(httr)
 library(jsonlite)
+library(plotly)
+library(splines)
+library(ggplot2)
 
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
 
@@ -78,17 +81,13 @@ parse_prediction_outputs <- function(outputs) {
   # Reshape so each row corresponds to a fragment in the same order as the
   # annotation vector.
   coeff_matrix <- t(matrix(coefficients, nrow = coeffs_per_fragment, byrow = TRUE))
-  coefficient_strings <- apply(coeff_matrix, 1, function(row) paste(formatC(row, format = "f", digits = 6), collapse = ", "))
 
   valid_fragments <- !is.na(fragments) & nzchar(trimws(fragments))
 
   list(
-    table = data.frame(
-      Fragment = fragments[valid_fragments],
-      Mz = mzs[valid_fragments],
-      Coefficients = coefficient_strings[valid_fragments],
-      stringsAsFactors = FALSE
-    ),
+    fragments = fragments[valid_fragments],
+    mz = mzs[valid_fragments],
+    coefficients = coeff_matrix[valid_fragments, , drop = FALSE],
     knots = knots
   )
 }
@@ -100,6 +99,53 @@ resolve_output <- function(output_map, candidates) {
     }
   }
   NULL
+}
+
+evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200) {
+  fragments <- predictions$fragments
+  coeff_matrix <- predictions$coefficients
+  knots <- predictions$knots
+
+  if (length(fragments) == 0 || nrow(coeff_matrix) == 0) {
+    return(data.frame())
+  }
+
+  domain_min <- knots[degree + 1]
+  domain_max <- knots[length(knots) - degree]
+
+  plot_min <- max(x_range[1], domain_min)
+  plot_max <- min(x_range[2], domain_max)
+
+  if (plot_min >= plot_max) {
+    return(data.frame())
+  }
+
+  x_vals <- seq(plot_min, plot_max, length.out = points)
+  basis <- splines::splineDesign(knots = knots, x = x_vals, ord = degree + 1, outer.ok = TRUE)
+  total_coeffs <- ncol(basis)
+  coeffs_per_fragment <- ncol(coeff_matrix)
+  padding <- total_coeffs - coeffs_per_fragment
+
+  if (padding < 0 || padding %% 2 != 0) {
+    stop("Unable to align fragment coefficients with knot vector")
+  }
+
+  pad_each_side <- padding / 2
+
+  curve_dfs <- lapply(seq_along(fragments), function(idx) {
+    fragment_coeffs <- coeff_matrix[idx, ]
+    full_coeffs <- c(rep(0, pad_each_side), fragment_coeffs, rep(0, pad_each_side))
+    values <- as.numeric(basis %*% full_coeffs)
+
+    data.frame(
+      Fragment = fragments[[idx]],
+      Position = x_vals,
+      Intensity = values,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, curve_dfs)
 }
 
 ui <- fluidPage(
@@ -132,9 +178,7 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      tableOutput("prediction_table"),
-      h4("Shared knot vector"),
-      uiOutput("knot_list")
+      plotlyOutput("fragment_plot")
     )
   )
 )
@@ -160,7 +204,6 @@ server <- function(input, output, session) {
 
   output$status <- renderUI({
     preds <- predictions()
-    print(preds)
     req(preds)
 
     if (identical(preds$status, "error")) {
@@ -170,24 +213,27 @@ server <- function(input, output, session) {
     }
   })
 
-  output$prediction_table <- renderTable({
+  output$fragment_plot <- renderPlotly({
     preds <- predictions()
     req(preds)
-    preds$data$table
-  }, striped = TRUE, spacing = "s")
 
-  output$knot_list <- renderUI({
-    preds <- predictions()
-    req(preds)
-    knots <- preds$data$knots
-
-    if (length(knots) == 0) {
-      return(div(class = "text-muted", "No knot vector returned."))
+    if (identical(preds$status, "error")) {
+      return(NULL)
     }
 
-    tags$ul(
-      lapply(knots, function(value) tags$li(formatC(value, format = "f", digits = 6)))
+    curve_data <- evaluate_fragment_curves(preds$data)
+
+    validate(
+      need(nrow(curve_data) > 0, "No valid fragment curves to display in the requested range.")
     )
+
+    plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
+      geom_line(color = "#1f77b4") +
+      facet_wrap(~Fragment, scales = "free_y") +
+      labs(x = "m/z", y = "Relative intensity", title = "Altimeter fragment spline curves") +
+      theme_minimal()
+
+    ggplotly(plot, tooltip = c("x", "y", "text"))
   })
 }
 
