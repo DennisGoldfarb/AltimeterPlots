@@ -192,7 +192,7 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      plotlyOutput("fragment_plot")
+      plotlyOutput("fragment_plot", height = "600px")
     )
   )
 )
@@ -245,7 +245,11 @@ server <- function(input, output, session) {
       geom_line(color = "#3a80b9") +
       facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
       scale_x_continuous(breaks = c(20, 30, 40)) +
-      labs(x = "m/z", y = "Intensity", title = "Altimeter fragment spline curves") +
+      labs(
+        x = "Normalized Collision Energy % (NCE)",
+        y = "Predicted abundance",
+        title = "Altimeter fragment spline curves"
+      ) +
       theme_minimal() +
       theme(
         panel.grid = element_blank(),
@@ -253,8 +257,10 @@ server <- function(input, output, session) {
         axis.text.y = element_blank(),
         axis.title.x = element_text(color = "#193c55"),
         axis.title.y = element_text(color = "#193c55"),
-        axis.ticks = element_line(color = "#193c55"),
-        axis.line = element_line(color = "#193c55")
+        axis.ticks = element_line(color = "#193c55", size = 0.5),
+        axis.line = element_line(color = "#193c55", size = 0.5),
+        panel.spacing = grid::unit(0.8, "lines"),
+        strip.text = element_text(face = "bold")
       )
 
     ggplotly(plot, tooltip = c("x", "y", "text"))
