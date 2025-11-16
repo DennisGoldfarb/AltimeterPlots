@@ -227,9 +227,12 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
+    facet_count <- length(unique(curve_data$Fragment))
+    grid_size <- max(1, ceiling(sqrt(facet_count)))
+
     plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
-      facet_wrap(~Fragment, scales = "free_y") +
+      facet_wrap(~Fragment, scales = "free_y", nrow = grid_size, ncol = grid_size) +
       labs(x = "m/z", y = "Intensity", title = "Altimeter fragment spline curves") +
       theme_minimal() +
       theme(
