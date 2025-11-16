@@ -180,6 +180,14 @@ ui <- fluidPage(
         value = 2,
         step = 1
       ),
+      sliderInput(
+        inputId = "nce",
+        label = "Normalized collision energy (NCE)",
+        min = 20,
+        max = 40,
+        value = 30,
+        step = 0.1
+      ),
       actionButton(
         inputId = "submit",
         label = "Predict"
@@ -228,6 +236,7 @@ server <- function(input, output, session) {
   })
 
   output$fragment_plot <- renderPlotly({
+    req(input$nce)
     preds <- predictions()
     req(preds)
 
@@ -243,6 +252,7 @@ server <- function(input, output, session) {
 
     plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
+      geom_vline(xintercept = input$nce, color = "#d95f02", linetype = "dashed") +
       facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
       scale_x_continuous(breaks = c(20, 30, 40)) +
       labs(
