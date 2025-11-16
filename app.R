@@ -7,6 +7,9 @@
 library(shiny)
 library(httr)
 library(jsonlite)
+library(plotly)
+library(splines)
+library(ggplot2)
 
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
 
@@ -78,17 +81,13 @@ parse_prediction_outputs <- function(outputs) {
   # Reshape so each row corresponds to a fragment in the same order as the
   # annotation vector.
   coeff_matrix <- t(matrix(coefficients, nrow = coeffs_per_fragment, byrow = TRUE))
-  coefficient_strings <- apply(coeff_matrix, 1, function(row) paste(formatC(row, format = "f", digits = 6), collapse = ", "))
 
   valid_fragments <- !is.na(fragments) & nzchar(trimws(fragments))
 
   list(
-    table = data.frame(
-      Fragment = fragments[valid_fragments],
-      Mz = mzs[valid_fragments],
-      Coefficients = coefficient_strings[valid_fragments],
-      stringsAsFactors = FALSE
-    ),
+    fragments = fragments[valid_fragments],
+    mz = mzs[valid_fragments],
+    coefficients = coeff_matrix[valid_fragments, , drop = FALSE],
     knots = knots
   )
 }
@@ -100,6 +99,67 @@ resolve_output <- function(output_map, candidates) {
     }
   }
   NULL
+}
+
+evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200, max_fragments = 24) {
+  fragments <- predictions$fragments
+  coeff_matrix <- predictions$coefficients
+  knots <- predictions$knots
+
+  if (length(fragments) == 0 || nrow(coeff_matrix) == 0) {
+    return(data.frame())
+  }
+
+  fragments_to_use <- seq_len(min(length(fragments), max_fragments))
+  fragments <- fragments[fragments_to_use]
+  coeff_matrix <- coeff_matrix[fragments_to_use, , drop = FALSE]
+
+  if (length(x_range) != 2 || any(is.na(x_range))) {
+    return(data.frame())
+  }
+
+  x_start <- x_range[1]
+  x_end <- x_range[2]
+
+  if (!is.finite(x_start) || !is.finite(x_end) || x_start >= x_end) {
+    return(data.frame())
+  }
+
+  x_vals <- seq(x_start, x_end, length.out = points)
+  basis <- splines::splineDesign(knots = knots, x = x_vals, ord = degree + 1, outer.ok = TRUE)
+  total_coeffs <- ncol(basis)
+  coeffs_per_fragment <- ncol(coeff_matrix)
+  padding <- total_coeffs - coeffs_per_fragment
+
+  if (padding < 0 || padding %% 2 != 0) {
+    stop("Unable to align fragment coefficients with knot vector")
+  }
+
+  pad_each_side <- padding / 2
+
+  curve_dfs <- lapply(seq_along(fragments), function(idx) {
+    fragment_coeffs <- coeff_matrix[idx, ]
+    full_coeffs <- c(rep(0, pad_each_side), fragment_coeffs, rep(0, pad_each_side))
+    values <- as.numeric(basis %*% full_coeffs)
+
+    data.frame(
+      Fragment = fragments[[idx]],
+      Position = x_vals,
+      Intensity = values,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  curve_data <- do.call(rbind, curve_dfs)
+
+  if (nrow(curve_data) == 0) {
+    return(curve_data)
+  }
+
+  ordered_facets <- unique(fragments)
+  curve_data$Fragment <- factor(curve_data$Fragment, levels = ordered_facets)
+
+  curve_data
 }
 
 ui <- fluidPage(
@@ -132,9 +192,7 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      tableOutput("prediction_table"),
-      h4("Shared knot vector"),
-      uiOutput("knot_list")
+      plotlyOutput("fragment_plot", height = "800px")
     )
   )
 )
@@ -160,7 +218,6 @@ server <- function(input, output, session) {
 
   output$status <- renderUI({
     preds <- predictions()
-    print(preds)
     req(preds)
 
     if (identical(preds$status, "error")) {
@@ -170,24 +227,41 @@ server <- function(input, output, session) {
     }
   })
 
-  output$prediction_table <- renderTable({
+  output$fragment_plot <- renderPlotly({
     preds <- predictions()
     req(preds)
-    preds$data$table
-  }, striped = TRUE, spacing = "s")
 
-  output$knot_list <- renderUI({
-    preds <- predictions()
-    req(preds)
-    knots <- preds$data$knots
-
-    if (length(knots) == 0) {
-      return(div(class = "text-muted", "No knot vector returned."))
+    if (identical(preds$status, "error")) {
+      return(NULL)
     }
 
-    tags$ul(
-      lapply(knots, function(value) tags$li(formatC(value, format = "f", digits = 6)))
-    )
+    curve_data <- evaluate_fragment_curves(preds$data)
+
+    if (nrow(curve_data) == 0) {
+      return(NULL)
+    }
+
+    plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
+      geom_line(color = "#3a80b9") +
+      facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
+      scale_x_continuous(breaks = c(20, 30, 40)) +
+      labs(
+        x = "Normalized Collision Energy % (NCE)",
+        y = "Predicted abundance",
+        title = "Altimeter fragment spline curves"
+      ) +
+      theme_minimal() +
+      theme(
+        panel.grid = element_blank(),
+        axis.text.x = element_text(color = "#193c55"),
+        axis.text.y = element_blank(),
+        axis.title.x = element_text(color = "#193c55"),
+        axis.title.y = element_text(color = "#193c55"),
+        axis.ticks = element_line(color = "#193c55"),
+        axis.line = element_line(color = "#193c55")
+      )
+
+    ggplotly(plot, tooltip = c("x", "y", "text"))
   })
 }
 
