@@ -80,11 +80,13 @@ parse_prediction_outputs <- function(outputs) {
   coeff_matrix <- t(matrix(coefficients, nrow = coeffs_per_fragment, byrow = TRUE))
   coefficient_strings <- apply(coeff_matrix, 1, function(row) paste(formatC(row, format = "f", digits = 6), collapse = ", "))
 
+  valid_fragments <- !is.na(fragments) & nzchar(trimws(fragments))
+
   list(
     table = data.frame(
-      Fragment = fragments,
-      Mz = mzs,
-      Coefficients = coefficient_strings,
+      Fragment = fragments[valid_fragments],
+      Mz = mzs[valid_fragments],
+      Coefficients = coefficient_strings[valid_fragments],
       stringsAsFactors = FALSE
     ),
     knots = knots
