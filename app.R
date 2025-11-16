@@ -162,6 +162,54 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
   curve_data
 }
 
+fragment_intensity_ranges <- function(curve_df) {
+  if (nrow(curve_df) == 0) {
+    return(list())
+  }
+
+  fragments <- levels(curve_df$Fragment)
+
+  lapply(fragments, function(fragment) {
+    subset_df <- curve_df[curve_df$Fragment == fragment, , drop = FALSE]
+    range_vals <- range(subset_df$Intensity, na.rm = TRUE)
+
+    if (!all(is.finite(range_vals)) || range_vals[1] == range_vals[2]) {
+      # Expand to avoid zero height guides
+      midpoint <- ifelse(is.finite(range_vals[1]), range_vals[1], 0)
+      range_vals <- c(midpoint - 0.5, midpoint + 0.5)
+    }
+
+    range_vals
+  }) |>
+    setNames(fragments)
+}
+
+build_vertical_shapes <- function(nce_value, fragments, fragment_ranges) {
+  axis_ref <- function(prefix, idx) {
+    if (idx == 1) {
+      prefix
+    } else {
+      paste0(prefix, idx)
+    }
+  }
+
+  lapply(seq_along(fragments), function(idx) {
+    fragment <- fragments[[idx]]
+    range_vals <- fragment_ranges[[fragment]]
+
+    list(
+      type = "line",
+      x0 = nce_value,
+      x1 = nce_value,
+      xref = axis_ref("x", idx),
+      y0 = range_vals[1],
+      y1 = range_vals[2],
+      yref = axis_ref("y", idx),
+      line = list(color = "#d95f02", dash = "dash", width = 1)
+    )
+  })
+}
+
 ui <- fluidPage(
   titlePanel("Altimeter Peptide Fragmentation Predictions"),
 
@@ -247,17 +295,18 @@ server <- function(input, output, session) {
   })
 
   output$fragment_plot <- renderPlotly({
-    req(input$nce)
-
     curve_data_df <- curve_data()
 
     if (nrow(curve_data_df) == 0) {
       return(NULL)
     }
 
+    fragments <- levels(curve_data_df$Fragment)
+    fragment_ranges <- fragment_intensity_ranges(curve_data_df)
+    initial_nce <- isolate(if (!is.null(input$nce)) input$nce else 30)
+
     plot <- ggplot(curve_data_df, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
-      geom_vline(xintercept = input$nce, color = "#d95f02", linetype = "dashed") +
       facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
       scale_x_continuous(breaks = c(20, 30, 40)) +
       labs(
@@ -278,8 +327,29 @@ server <- function(input, output, session) {
         strip.text = element_text(face = "bold")
       )
 
-    ggplotly(plot, tooltip = c("x", "y", "text"))
+    ggplotly(plot, tooltip = c("x", "y", "text")) |>
+      layout(shapes = build_vertical_shapes(initial_nce, fragments, fragment_ranges))
   })
+
+  observeEvent({
+    list(input$nce, curve_data())
+  }, {
+    curve_data_df <- curve_data()
+
+    if (nrow(curve_data_df) == 0) {
+      return(NULL)
+    }
+
+    fragments <- levels(curve_data_df$Fragment)
+    fragment_ranges <- fragment_intensity_ranges(curve_data_df)
+
+    proxy <- plotlyProxy("fragment_plot", session)
+    proxy <- plotlyProxyInvoke(
+      proxy,
+      "relayout",
+      list(shapes = build_vertical_shapes(input$nce, fragments, fragment_ranges))
+    )
+  }, ignoreNULL = FALSE)
 }
 
 shinyApp(ui = ui, server = server)
