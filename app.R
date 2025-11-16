@@ -155,6 +155,7 @@ server <- function(input, output, session) {
 
   output$status <- renderUI({
     preds <- predictions()
+    print(preds)
     req(preds)
 
     if (identical(preds$status, "error")) {
@@ -167,16 +168,12 @@ server <- function(input, output, session) {
   output$prediction_table <- renderTable({
     preds <- predictions()
     req(preds)
-
-    validate(need(identical(preds$status, "success"), preds$message))
     preds$data$table
   }, striped = TRUE, spacing = "s")
 
   output$knot_list <- renderUI({
     preds <- predictions()
     req(preds)
-
-    validate(need(identical(preds$status, "success"), preds$message))
     knots <- preds$data$knots
 
     if (length(knots) == 0) {
