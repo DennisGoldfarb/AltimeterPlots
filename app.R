@@ -110,17 +110,18 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
     return(data.frame())
   }
 
-  domain_min <- knots[degree + 1]
-  domain_max <- knots[length(knots) - degree]
-
-  plot_min <- max(x_range[1], domain_min)
-  plot_max <- min(x_range[2], domain_max)
-
-  if (plot_min >= plot_max) {
+  if (length(x_range) != 2 || any(is.na(x_range))) {
     return(data.frame())
   }
 
-  x_vals <- seq(plot_min, plot_max, length.out = points)
+  x_start <- x_range[1]
+  x_end <- x_range[2]
+
+  if (!is.finite(x_start) || !is.finite(x_end) || x_start >= x_end) {
+    return(data.frame())
+  }
+
+  x_vals <- seq(x_start, x_end, length.out = points)
   basis <- splines::splineDesign(knots = knots, x = x_vals, ord = degree + 1, outer.ok = TRUE)
   total_coeffs <- ncol(basis)
   coeffs_per_fragment <- ncol(coeff_matrix)
