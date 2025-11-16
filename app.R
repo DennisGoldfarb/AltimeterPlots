@@ -259,7 +259,8 @@ server <- function(input, output, session) {
         axis.title.y = element_text(color = "#193c55"),
         axis.ticks = element_line(color = "#193c55", size = 0.5),
         axis.line = element_line(color = "#193c55", size = 0.5),
-        panel.spacing = grid::unit(0.8, "lines")
+        panel.spacing = grid::unit(0.8, "lines"),
+        strip.text = element_text(face = "bold")
       )
 
     ggplotly(plot, tooltip = c("x", "y", "text"))
