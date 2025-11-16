@@ -74,7 +74,10 @@ parse_prediction_outputs <- function(outputs) {
     stop("Unexpected number of coefficients per fragment: ", coeffs_per_fragment)
   }
 
-  coeff_matrix <- matrix(coefficients, ncol = coeffs_per_fragment, byrow = TRUE)
+  # Koina returns coefficient 1 for all fragments followed by coefficient 2, etc.
+  # Reshape so each row corresponds to a fragment in the same order as the
+  # annotation vector.
+  coeff_matrix <- t(matrix(coefficients, nrow = coeffs_per_fragment, byrow = TRUE))
   coefficient_strings <- apply(coeff_matrix, 1, function(row) paste(formatC(row, format = "f", digits = 6), collapse = ", "))
 
   list(
