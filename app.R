@@ -53,11 +53,6 @@ parse_prediction_outputs <- function(outputs) {
     stop("Koina response did not include any outputs")
   }
 
-  for(x in outputs){
-    print(x$name)
-    #print(unlist(x$data))
-  }
-
   output_map <- setNames(
     lapply(outputs, function(entry) entry$data),
     vapply(outputs, function(entry) entry$name, character(1))
@@ -67,8 +62,6 @@ parse_prediction_outputs <- function(outputs) {
   coefficients <- as.numeric(unlist(resolve_output(output_map, c("coefficients"))))
   knots <- as.numeric(unlist(resolve_output(output_map, c("knots"))))
   mzs <- as.numeric(unlist(resolve_output(output_map, c("mz"))))
-
-  print(coefficients)
 
   if (is.null(fragments) || is.null(coefficients) || is.null(knots) || is.null(mzs)){
     stop("Koina response missing fragments, coefficients, mzs, or knot vector")
