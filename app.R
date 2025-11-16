@@ -223,15 +223,23 @@ server <- function(input, output, session) {
 
     curve_data <- evaluate_fragment_curves(preds$data)
 
-    validate(
-      need(nrow(curve_data) > 0, "No valid fragment curves to display in the requested range.")
-    )
+    if (nrow(curve_data) == 0) {
+      return(NULL)
+    }
 
     plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
-      geom_line(color = "#1f77b4") +
+      geom_line(color = "#3a80b9") +
       facet_wrap(~Fragment, scales = "free_y") +
-      labs(x = "m/z", y = "Relative intensity", title = "Altimeter fragment spline curves") +
-      theme_minimal()
+      labs(x = "m/z", y = NULL, title = "Altimeter fragment spline curves") +
+      theme_minimal() +
+      theme(
+        panel.grid = element_blank(),
+        axis.text = element_text(color = "#193c55"),
+        axis.title.x = element_text(color = "#193c55"),
+        axis.title.y = element_blank(),
+        axis.ticks = element_line(color = "#193c55"),
+        axis.line = element_line(color = "#193c55")
+      )
 
     ggplotly(plot, tooltip = c("x", "y", "text"))
   })
