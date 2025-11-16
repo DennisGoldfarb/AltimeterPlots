@@ -234,7 +234,12 @@ ui <- fluidPage(
         min = 20,
         max = 40,
         value = 30,
-        step = 0.1
+        step = 0.5
+      ),
+      div(
+        class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
+        actionButton("nce_decrement", "-0.5 NCE"),
+        actionButton("nce_increment", "+0.5 NCE")
       ),
       actionButton(
         inputId = "submit",
@@ -329,6 +334,18 @@ server <- function(input, output, session) {
 
     ggplotly(plot, tooltip = c("x", "y", "text")) |>
       layout(shapes = build_vertical_shapes(initial_nce, fragments, fragment_ranges))
+  })
+
+  observeEvent(input$nce_increment, {
+    current <- isolate(input$nce)
+    new_value <- min(40, ifelse(is.null(current), 30, current + 0.5))
+    updateSliderInput(session, "nce", value = new_value)
+  })
+
+  observeEvent(input$nce_decrement, {
+    current <- isolate(input$nce)
+    new_value <- max(20, ifelse(is.null(current), 30, current - 0.5))
+    updateSliderInput(session, "nce", value = new_value)
   })
 
   observeEvent({
