@@ -230,13 +230,14 @@ server <- function(input, output, session) {
     plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
       facet_wrap(~Fragment, scales = "free_y") +
-      labs(x = "m/z", y = NULL, title = "Altimeter fragment spline curves") +
+      labs(x = "m/z", y = "Intensity", title = "Altimeter fragment spline curves") +
       theme_minimal() +
       theme(
         panel.grid = element_blank(),
-        axis.text = element_text(color = "#193c55"),
+        axis.text.x = element_text(color = "#193c55"),
+        axis.text.y = element_blank(),
         axis.title.x = element_text(color = "#193c55"),
-        axis.title.y = element_blank(),
+        axis.title.y = element_text(color = "#193c55"),
         axis.ticks = element_line(color = "#193c55"),
         axis.line = element_line(color = "#193c55")
       )
