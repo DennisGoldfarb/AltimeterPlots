@@ -145,7 +145,16 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
     )
   })
 
-  do.call(rbind, curve_dfs)
+  curve_data <- do.call(rbind, curve_dfs)
+
+  if (nrow(curve_data) == 0) {
+    return(curve_data)
+  }
+
+  ordered_facets <- unique(fragments)
+  curve_data$Fragment <- factor(curve_data$Fragment, levels = ordered_facets)
+
+  curve_data
 }
 
 ui <- fluidPage(
