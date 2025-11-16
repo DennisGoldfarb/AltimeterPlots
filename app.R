@@ -53,17 +53,25 @@ parse_prediction_outputs <- function(outputs) {
     stop("Koina response did not include any outputs")
   }
 
+  for(x in outputs){
+    print(x$name)
+    #print(unlist(x$data))
+  }
+
   output_map <- setNames(
     lapply(outputs, function(entry) entry$data),
     vapply(outputs, function(entry) entry$name, character(1))
   )
 
-  fragments <- unlist(resolve_output(output_map, c("fragment_annotations", "fragments", "fragment_ions")))
-  coefficients <- as.numeric(unlist(resolve_output(output_map, c("spline_coefficients", "fragment_coefficients", "coefficients"))))
-  knots <- as.numeric(unlist(resolve_output(output_map, c("spline_knots", "knot_vectors", "knot_vector", "knots"))))
+  fragments <- unlist(resolve_output(output_map, c("annotations")))
+  coefficients <- as.numeric(unlist(resolve_output(output_map, c("coefficients"))))
+  knots <- as.numeric(unlist(resolve_output(output_map, c("knots"))))
+  mzs <- as.numeric(unlist(resolve_output(output_map, c("mz"))))
 
-  if (is.null(fragments) || is.null(coefficients) || is.null(knots)) {
-    stop("Koina response missing fragments, coefficients, or knot vector")
+  print(coefficients)
+
+  if (is.null(fragments) || is.null(coefficients) || is.null(knots) || is.null(mzs)){
+    stop("Koina response missing fragments, coefficients, mzs, or knot vector")
   }
 
   num_fragments <- length(fragments)
@@ -79,6 +87,7 @@ parse_prediction_outputs <- function(outputs) {
   list(
     table = data.frame(
       Fragment = fragments,
+      Mz = mzs,
       Coefficients = coefficient_strings,
       stringsAsFactors = FALSE
     ),
