@@ -192,7 +192,7 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      plotlyOutput("fragment_plot", height = "800px")
+      plotlyOutput("fragment_plot", height = "600px")
     )
   )
 )
@@ -258,7 +258,8 @@ server <- function(input, output, session) {
         axis.title.x = element_text(color = "#193c55"),
         axis.title.y = element_text(color = "#193c55"),
         axis.ticks = element_line(color = "#193c55"),
-        axis.line = element_line(color = "#193c55")
+        axis.line = element_line(color = "#193c55"),
+        panel.spacing = grid::unit(0.8, "lines")
       )
 
     ggplotly(plot, tooltip = c("x", "y", "text"))
