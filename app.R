@@ -257,8 +257,8 @@ server <- function(input, output, session) {
         axis.text.y = element_blank(),
         axis.title.x = element_text(color = "#193c55"),
         axis.title.y = element_text(color = "#193c55"),
-        axis.ticks = element_line(color = "#193c55"),
-        axis.line = element_line(color = "#193c55"),
+        axis.ticks = element_line(color = "#193c55", size = 0.5),
+        axis.line = element_line(color = "#193c55", size = 0.5),
         panel.spacing = grid::unit(0.8, "lines")
       )
 
