@@ -13,6 +13,10 @@ library(ggplot2)
 
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
 
+`%||%` <- function(lhs, rhs) {
+  if (!is.null(lhs)) lhs else rhs
+}
+
 # Helper that issues an HTTP inference request for a single peptide/charge pair
 # and parses the spline metadata.
 fetch_predictions <- function(sequence, charge) {
@@ -184,30 +188,135 @@ fragment_intensity_ranges <- function(curve_df) {
     setNames(fragments)
 }
 
-build_vertical_shapes <- function(nce_value, fragments, fragment_ranges) {
-  axis_ref <- function(prefix, idx) {
-    if (idx == 1) {
-      prefix
-    } else {
-      paste0(prefix, idx)
-    }
+fragment_intensity_at_nce <- function(curve_df, nce_value) {
+  if (nrow(curve_df) == 0 || is.null(nce_value) || !is.finite(nce_value)) {
+    return(numeric())
   }
 
-  lapply(seq_along(fragments), function(idx) {
-    fragment <- fragments[[idx]]
+  fragments <- levels(curve_df$Fragment)
+
+  values <- vapply(fragments, function(fragment) {
+    subset_df <- curve_df[curve_df$Fragment == fragment, c("Position", "Intensity"), drop = FALSE]
+
+    if (nrow(subset_df) == 0) {
+      return(NA_real_)
+    }
+
+    approx(subset_df$Position, subset_df$Intensity, xout = nce_value, rule = 2)$y
+  }, numeric(1))
+
+  setNames(values, fragments)
+}
+
+axis_ref_from_name <- function(axis_name, axis_letter) {
+  if (is.null(axis_name) || axis_name == paste0(axis_letter, "axis")) {
+    return(axis_letter)
+  }
+
+  sub("axis", "", axis_name)
+}
+
+extract_fragment_axis_map <- function(plotly_traces, fragments) {
+  axis_map <- list()
+
+  if (length(plotly_traces) == 0) {
+    return(axis_map)
+  }
+
+  line_traces <- Filter(
+    function(trace) identical(trace$type, "scatter") && identical(trace$mode, "lines"),
+    plotly_traces
+  )
+
+  identify_fragment <- function(trace_name) {
+    if (is.null(trace_name) || !nzchar(trace_name)) {
+      return(NULL)
+    }
+
+    if (grepl("Fragment=", trace_name, fixed = TRUE)) {
+      candidate <- trimws(sub(".*Fragment=([^,]+).*", "\\1", trace_name))
+      return(candidate)
+    }
+
+    if (grepl("Fragment:", trace_name, fixed = TRUE)) {
+      candidate <- trimws(sub(".*Fragment:\\s*([^,]+).*", "\\1", trace_name))
+      return(candidate)
+    }
+
+    trimws(trace_name)
+  }
+
+  for (trace in line_traces) {
+    fragment <- identify_fragment(trace$name)
+
+    if (is.null(fragment) || !(fragment %in% fragments)) {
+      next
+    }
+
+    if (!is.null(axis_map[[fragment]])) {
+      next
+    }
+
+    axis_map[[fragment]] <- list(
+      xref = axis_ref_from_name(trace$xaxis %||% "xaxis", "x"),
+      yref = axis_ref_from_name(trace$yaxis %||% "yaxis", "y"),
+      xaxis = trace$xaxis %||% "xaxis",
+      yaxis = trace$yaxis %||% "yaxis"
+    )
+  }
+
+  axis_map
+}
+
+build_vertical_shapes <- function(nce_value, fragments, fragment_ranges, fragment_values, axis_map) {
+  shapes <- lapply(fragments, function(fragment) {
+    axes <- axis_map[[fragment]]
     range_vals <- fragment_ranges[[fragment]]
+    target_value <- fragment_values[[fragment]]
+
+    if (is.null(axes) || is.null(range_vals) || length(range_vals) < 2 || is.na(target_value)) {
+      return(NULL)
+    }
 
     list(
       type = "line",
       x0 = nce_value,
       x1 = nce_value,
-      xref = axis_ref("x", idx),
+      xref = axes$xref,
       y0 = range_vals[1],
-      y1 = range_vals[2],
-      yref = axis_ref("y", idx),
-      line = list(color = "#d95f02", dash = "dash", width = 1)
+      y1 = target_value,
+      yref = axes$yref,
+      line = list(color = "#7a7a7a", dash = "dash", width = 1)
     )
   })
+
+  Filter(Negate(is.null), shapes)
+}
+
+build_fragment_point_traces <- function(nce_value, fragments, fragment_values, axis_map) {
+  traces <- lapply(fragments, function(fragment) {
+    axes <- axis_map[[fragment]]
+    target_value <- fragment_values[[fragment]]
+
+    if (is.null(axes)) {
+      return(NULL)
+    }
+
+    list(
+      x = c(nce_value),
+      y = c(target_value),
+      type = "scatter",
+      mode = "markers",
+      marker = list(color = "#7a7a7a", size = 6),
+      hoverinfo = "x+y",
+      showlegend = FALSE,
+      xaxis = axes$xaxis,
+      yaxis = axes$yaxis
+    )
+  })
+
+  names(traces) <- fragments
+  Filter(Negate(is.null), traces)
 }
 
 ui <- fluidPage(
@@ -303,12 +412,16 @@ server <- function(input, output, session) {
     curve_data_df <- curve_data()
 
     if (nrow(curve_data_df) == 0) {
+      session$userData$fragment_axis_map <- NULL
+      session$userData$fragment_point_traces <- NULL
+      session$userData$fragment_order <- NULL
       return(NULL)
     }
 
     fragments <- levels(curve_data_df$Fragment)
     fragment_ranges <- fragment_intensity_ranges(curve_data_df)
     initial_nce <- isolate(if (!is.null(input$nce)) input$nce else 30)
+    fragment_values <- fragment_intensity_at_nce(curve_data_df, initial_nce)
 
     plot <- ggplot(curve_data_df, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
@@ -332,8 +445,29 @@ server <- function(input, output, session) {
         strip.text = element_text(face = "bold")
       )
 
-    ggplotly(plot, tooltip = c("x", "y", "text")) |>
-      layout(shapes = build_vertical_shapes(initial_nce, fragments, fragment_ranges))
+    built_plot <- ggplotly(plot, tooltip = c("x", "y", "text")) |>
+      plotly_build()
+
+    axis_map <- extract_fragment_axis_map(built_plot$x$data, fragments)
+    shapes <- build_vertical_shapes(initial_nce, fragments, fragment_ranges, fragment_values, axis_map)
+    built_plot$x$layout$shapes <- shapes
+
+    point_traces <- build_fragment_point_traces(initial_nce, fragments, fragment_values, axis_map)
+    existing_traces <- length(built_plot$x$data)
+    built_plot$x$data <- c(built_plot$x$data, point_traces)
+
+    if (length(point_traces) > 0) {
+      point_indexes <- existing_traces + seq_along(point_traces) - 1
+      names(point_indexes) <- names(point_traces)
+      session$userData$fragment_point_traces <- point_indexes
+    } else {
+      session$userData$fragment_point_traces <- NULL
+    }
+
+    session$userData$fragment_axis_map <- axis_map
+    session$userData$fragment_order <- fragments
+
+    built_plot
   })
 
   observeEvent(input$nce_increment, {
@@ -359,13 +493,37 @@ server <- function(input, output, session) {
 
     fragments <- levels(curve_data_df$Fragment)
     fragment_ranges <- fragment_intensity_ranges(curve_data_df)
+    fragment_values <- fragment_intensity_at_nce(curve_data_df, input$nce)
+    axis_map <- session$userData$fragment_axis_map %||% list()
 
     proxy <- plotlyProxy("fragment_plot", session)
     proxy <- plotlyProxyInvoke(
       proxy,
       "relayout",
-      list(shapes = build_vertical_shapes(input$nce, fragments, fragment_ranges))
+      list(shapes = build_vertical_shapes(input$nce, fragments, fragment_ranges, fragment_values, axis_map))
     )
+
+    point_indexes <- session$userData$fragment_point_traces
+    if (!is.null(point_indexes) && length(point_indexes) > 0) {
+      tracked_fragments <- intersect(fragments, names(point_indexes))
+
+      if (length(tracked_fragments) > 0) {
+        new_x <- lapply(tracked_fragments, function(fragment) {
+          c(input$nce)
+        })
+
+        new_y <- lapply(tracked_fragments, function(fragment) {
+          c(fragment_values[[fragment]])
+        })
+
+        proxy <- plotlyProxyInvoke(
+          proxy,
+          "restyle",
+          list(x = new_x, y = new_y),
+          as.list(unname(point_indexes[tracked_fragments]))
+        )
+      }
+    }
   }, ignoreNULL = FALSE)
 }
 
