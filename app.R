@@ -1285,13 +1285,13 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      h4("Precursor isotope envelope"),
-      plotlyOutput("isotope_plot", height = "300px"),
+      h4("Fragment spline curves"),
+      plotlyOutput("fragment_plot", height = "600px"),
       fluidRow(
         column(
           width = 6,
-          h4("Fragment spline curves"),
-          plotlyOutput("fragment_plot", height = "600px")
+          h4("Precursor isotope envelope"),
+          plotlyOutput("isotope_plot", height = "300px")
         ),
         column(
           width = 6,
