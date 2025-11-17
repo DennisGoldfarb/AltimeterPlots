@@ -606,21 +606,49 @@ server <- function(input, output, session) {
     window_bounds <- c(center - half_width, center + half_width)
     distribution$InsideWindow <- distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
 
-    shading_df <- data.frame(
-      xmin = window_bounds[1],
-      xmax = window_bounds[2],
-      ymin = 0,
-      ymax = 1.05
-    )
+    isolation_curve <- NULL
 
-    plot <- ggplot(distribution, aes(x = mz, y = percent)) +
-      geom_rect(
-        data = shading_df,
-        aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
-        inherit.aes = FALSE,
-        fill = "#d8eafd",
-        alpha = 0.4
-      ) +
+    if (half_width > 0 && is.finite(center)) {
+      mz_range <- range(distribution$mz, na.rm = TRUE)
+
+      if (!all(is.finite(mz_range))) {
+        mz_range <- c(center - half_width, center + half_width)
+      }
+
+      span <- max(diff(mz_range), half_width * 2)
+
+      if (!is.finite(span) || span <= 0) {
+        span <- half_width * 2
+      }
+
+      x_vals <- seq(center - span, center + span, length.out = 400)
+      a <- half_width
+      b <- 10
+      d <- 100
+      relative <- if (a > 0) abs((x_vals - center) / a) else 0
+      y_vals <- d / (1 + (relative)^(2 * b))
+
+      isolation_curve <- data.frame(
+        x = x_vals,
+        ymin = 0,
+        ymax = y_vals / d
+      )
+    }
+
+    plot <- ggplot(distribution, aes(x = mz, y = percent))
+
+    if (!is.null(isolation_curve)) {
+      plot <- plot +
+        geom_ribbon(
+          data = isolation_curve,
+          aes(x = x, ymin = ymin, ymax = ymax),
+          inherit.aes = FALSE,
+          fill = "#d8eafd",
+          alpha = 0.4
+        )
+    }
+
+    plot <- plot +
       geom_segment(
         aes(xend = mz, yend = 0, color = InsideWindow),
         linewidth = 0.8, color = "#193c55"
