@@ -124,6 +124,7 @@ expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
 
 evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200, max_fragments = 24) {
   fragments <- predictions$fragments
+  mz_values <- predictions$mz
   coeff_matrix <- predictions$coefficients
   knots <- predictions$knots
 
@@ -164,12 +165,57 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
 
   attr(curve_data, "fragment_metadata") <- list(
     fragments = fragments,
+    mz = if (!is.null(mz_values)) mz_values[fragments_to_use] else NULL,
     coefficients = coeff_matrix,
     knots = knots,
     degree = degree
   )
 
   curve_data
+}
+
+build_spectrum_data <- function(curve_df, nce_value) {
+  if (nrow(curve_df) == 0 || is.null(nce_value) || !is.finite(nce_value)) {
+    return(data.frame())
+  }
+
+  metadata <- attr(curve_df, "fragment_metadata")
+
+  if (is.null(metadata)) {
+    return(data.frame())
+  }
+
+  fragments <- metadata$fragments
+  mz_values <- metadata$mz %||% rep(NA_real_, length(fragments))
+
+  if (length(fragments) == 0) {
+    return(data.frame())
+  }
+
+  intensities <- fragment_intensity_at_nce(curve_df, nce_value)
+
+  if (length(intensities) == 0) {
+    return(data.frame())
+  }
+
+  ordered_intensities <- intensities[fragments]
+  ordered_intensities[is.na(ordered_intensities)] <- 0
+
+  max_intensity <- suppressWarnings(max(ordered_intensities, na.rm = TRUE))
+  if (!is.finite(max_intensity) || max_intensity <= 0) {
+    normalized <- rep(0, length(ordered_intensities))
+  } else {
+    normalized <- ordered_intensities / max_intensity
+  }
+
+  data.frame(
+    Fragment = fragments,
+    MZ = mz_values,
+    RawIntensity = ordered_intensities,
+    NormalizedIntensity = normalized,
+    NCE = nce_value,
+    stringsAsFactors = FALSE
+  )
 }
 
 fragment_intensity_ranges <- function(curve_df) {
@@ -430,7 +476,10 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      plotlyOutput("fragment_plot", height = "600px")
+      h4("Fragment spline curves"),
+      plotlyOutput("fragment_plot", height = "600px"),
+      h4("Predicted spectrum"),
+      plotlyOutput("spectrum_plot", height = "400px")
     )
   )
 )
@@ -474,6 +523,17 @@ server <- function(input, output, session) {
     }
 
     evaluate_fragment_curves(preds$data)
+  })
+
+  spectrum_data <- reactive({
+    curve_data_df <- curve_data()
+
+    if (nrow(curve_data_df) == 0) {
+      return(data.frame())
+    }
+
+    nce_value <- input$nce %||% 30
+    build_spectrum_data(curve_data_df, nce_value)
   })
 
   output$fragment_plot <- renderPlotly({
@@ -536,6 +596,44 @@ server <- function(input, output, session) {
     session$userData$fragment_order <- fragments
 
     built_plot
+  })
+
+  output$spectrum_plot <- renderPlotly({
+    spectrum_df <- spectrum_data()
+
+    if (nrow(spectrum_df) == 0) {
+      return(NULL)
+    }
+
+    nce_value <- spectrum_df$NCE[[1]] %||% input$nce %||% 30
+
+    tooltip_text <- paste0(
+      "Fragment: ", spectrum_df$Fragment,
+      "<br>m/z: ", round(spectrum_df$MZ, 4),
+      "<br>Normalized intensity: ", round(spectrum_df$NormalizedIntensity, 3)
+    )
+
+    plot <- ggplot(
+      spectrum_df,
+      aes(x = MZ, text = tooltip_text)
+    ) +
+      geom_segment(aes(xend = MZ, y = 0, yend = NormalizedIntensity), color = "#193c55", linewidth = 0.6) +
+      geom_point(aes(y = NormalizedIntensity), color = "#ab1f25", size = 1.5) +
+      labs(
+        title = paste0("Predicted spectrum at ", nce_value, " NCE"),
+        x = "m/z",
+        y = "Normalized intensity"
+      ) +
+      scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, by = 0.25)) +
+      theme_minimal() +
+      theme(
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(color = "#193c55"),
+        axis.title = element_text(color = "#193c55")
+      )
+
+    ggplotly(plot, tooltip = c("text"))
   })
 
   observeEvent(input$nce_increment, {
