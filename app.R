@@ -645,6 +645,13 @@ server <- function(input, output, session) {
           inherit.aes = FALSE,
           fill = "#d8eafd",
           alpha = 0.4
+        ) +
+        geom_line(
+          data = isolation_curve,
+          aes(x = x, y = ymax),
+          inherit.aes = FALSE,
+          color = "#3a80b9",
+          linewidth = 0.6
         )
     }
 
@@ -769,7 +776,7 @@ server <- function(input, output, session) {
         x = "m/z",
         y = "Normalized intensity"
       ) +
-      scale_y_continuous(limits = c(0, 100.05), breaks = seq(0, 1, by = 0.25)) +
+      scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, by = 0.25)) +
       theme_minimal() +
       theme(
         panel.grid.major.x = element_blank(),
