@@ -233,7 +233,7 @@ axis_ref_from_name <- function(axis_name, axis_letter) {
 extract_fragment_axis_map <- function(plotly_traces, fragments) {
   axis_map <- list()
 
-  if (length(plotly_traces) == 0) {
+  if (length(plotly_traces) == 0 || length(fragments) == 0) {
     return(axis_map)
   }
 
@@ -266,11 +266,17 @@ extract_fragment_axis_map <- function(plotly_traces, fragments) {
     trimws(trace_name)
   }
 
+  remaining_fragments <- fragments
+
   for (trace in line_traces) {
     fragment <- identify_fragment(trace$name)
 
     if (is.null(fragment) || !(fragment %in% fragments)) {
-      next
+      if (length(remaining_fragments) == 0) {
+        next
+      }
+
+      fragment <- remaining_fragments[[1]]
     }
 
     if (!is.null(axis_map[[fragment]])) {
@@ -283,6 +289,48 @@ extract_fragment_axis_map <- function(plotly_traces, fragments) {
       xaxis = trace$xaxis %||% "xaxis",
       yaxis = trace$yaxis %||% "yaxis"
     )
+
+    remaining_fragments <- remaining_fragments[remaining_fragments != fragment]
+
+    if (length(axis_map) == length(fragments)) {
+      break
+    }
+  }
+
+  if (length(axis_map) < length(fragments) && length(remaining_fragments) > 0) {
+    leftover_traces <- Filter(
+      function(trace) {
+        trace_type <- trace$type %||% ""
+        trace_type %in% valid_types
+      },
+      plotly_traces
+    )
+
+    unused_traces <- Filter(
+      function(trace) {
+        !any(vapply(axis_map, function(entry) {
+          identical(entry$xaxis, trace$xaxis %||% "xaxis") &&
+            identical(entry$yaxis, trace$yaxis %||% "yaxis")
+        }, logical(1)))
+      },
+      leftover_traces
+    )
+
+    for (fragment in remaining_fragments) {
+      if (length(unused_traces) == 0) {
+        break
+      }
+
+      trace <- unused_traces[[1]]
+      axis_map[[fragment]] <- list(
+        xref = axis_ref_from_name(trace$xaxis %||% "xaxis", "x"),
+        yref = axis_ref_from_name(trace$yaxis %||% "yaxis", "y"),
+        xaxis = trace$xaxis %||% "xaxis",
+        yaxis = trace$yaxis %||% "yaxis"
+      )
+
+      unused_traces <- unused_traces[-1]
+    }
   }
 
   axis_map
