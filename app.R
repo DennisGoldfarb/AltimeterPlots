@@ -1035,10 +1035,12 @@ build_zoom_fragment_panels <- function(fragments, mz_values, isotope_mask, targe
       }
     }
 
-    axis_range <- if (is.finite(monoisotopic_mz)) {
-      c(monoisotopic_mz - 0.5, monoisotopic_mz + 4)
-    } else {
-      rep(NA_real_, 2)
+    axis_range <- rep(NA_real_, 2)
+    tick0_value <- NA_real_
+
+    if (is.finite(monoisotopic_mz)) {
+      axis_range <- c(monoisotopic_mz - 0.5, monoisotopic_mz + 4)
+      tick0_value <- round(monoisotopic_mz)
     }
 
     padding_mz <- NA_real_
@@ -1073,7 +1075,8 @@ build_zoom_fragment_panels <- function(fragments, mz_values, isotope_mask, targe
         indices = isotope_indices,
         template = build_spectrum_segment_template(fragments[isotope_only_mask], mz_values[isotope_only_mask])
       ),
-      x_range = if (all(is.finite(axis_range))) axis_range else NULL
+      x_range = if (all(is.finite(axis_range))) axis_range else NULL,
+      x_tick0 = if (is.finite(tick0_value)) tick0_value else NA_real_
     )
   })
 
@@ -2148,7 +2151,17 @@ server <- function(input, output, session) {
         if (!is.null(range_values)) {
           suffix <- axis_suffixes[[panel_name]] %||% ""
           axis_name <- paste0("xaxis", suffix)
-          axis_updates[[axis_name]] <- list(range = range_values, autorange = FALSE)
+          tick0_value <- panel$x_tick0
+
+          axis_payload <- list(range = range_values, autorange = FALSE)
+
+          if (is.numeric(tick0_value) && is.finite(tick0_value)) {
+            axis_payload$tickmode <- "linear"
+            axis_payload$tick0 <- tick0_value
+            axis_payload$dtick <- 1
+          }
+
+          axis_updates[[axis_name]] <- axis_payload
         }
       }
 
