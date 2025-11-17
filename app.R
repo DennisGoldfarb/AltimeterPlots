@@ -691,9 +691,11 @@ build_spectrum_tooltip_vector <- function(prefixes, intensities) {
   }
 
   normalized <- as.numeric(intensities)
-  normalized[!is.finite(normalized)] <- 0
+  valid <- is.finite(normalized)
+  normalized[!valid] <- 0
   formatted <- sprintf("%.3f", normalized)
   tooltip_text <- paste0(prefixes, formatted)
+  tooltip_text[!valid] <- NA_character_
 
   text <- rep(NA_character_, length(prefixes) * 3)
   text_positions <- seq(2, length(text), by = 3)
@@ -706,6 +708,14 @@ build_spectrum_segment_template <- function(fragments, mz_values) {
     x = build_stem_segment_x(mz_values),
     tooltip_prefix = build_spectrum_tooltip_prefix(fragments, mz_values)
   )
+}
+
+is_isotope_annotation <- function(annotations) {
+  if (length(annotations) == 0) {
+    return(rep(FALSE, 0))
+  }
+
+  grepl("\\+i", annotations, ignore.case = TRUE)
 }
 
 build_isotope_plot_components <- function(profile, width, center_offset) {
@@ -943,7 +953,9 @@ server <- function(input, output, session) {
       withProgress(message = "Fetching isolation-aware spectrum", value = 0, {
         result <- fetch_isotope_intensities(input$peptide, input$charge, nce_value, efficiency_matrix)
         normalized_intensities <- normalize_intensity_matrix(result$intensities)
+        isotope_mask <- is_isotope_annotation(result$fragments)
         segment_template <- build_spectrum_segment_template(result$fragments, result$mz)
+        isotope_segment_template <- build_spectrum_segment_template(result$fragments[isotope_mask], result$mz[isotope_mask])
 
         isotope_prediction_table(list(
           fragments = result$fragments,
@@ -953,7 +965,9 @@ server <- function(input, output, session) {
           normalized_intensities = normalized_intensities,
           efficiencies = efficiency_matrix,
           nce = nce_value,
-          segment_template = segment_template
+          segment_template = segment_template,
+          isotope_mask = isotope_mask,
+          isotope_segment_template = isotope_segment_template
         ))
         session$userData$spectrum_segment_x <- NULL
       })
@@ -1163,6 +1177,17 @@ server <- function(input, output, session) {
       name = "Predicted peaks"
     )
 
+    plot <- plot %>% add_trace(
+      x = ensure_plotly_vector(NA_real_),
+      y = ensure_plotly_vector(NA_real_),
+      type = "scatter",
+      mode = "lines",
+      line = list(color = "rgba(255,127,14,0.5)", width = 4),
+      hoverinfo = "text",
+      text = "",
+      name = "Isotope peaks"
+    )
+
     plot <- plot %>% layout(
       title = "Predicted spectrum",
       xaxis = list(title = "m/z"),
@@ -1172,7 +1197,7 @@ server <- function(input, output, session) {
       margin = list(t = 40)
     )
 
-    session$userData$spectrum_trace_indices <- list(peaks = 0)
+    session$userData$spectrum_trace_indices <- list(peaks = 0, isotopes = 1)
     session$userData$spectrum_plot_ready <- TRUE
 
     plot
@@ -1190,8 +1215,9 @@ server <- function(input, output, session) {
     proxy <- plotlyProxy("spectrum_plot", session)
     predictions <- isotope_prediction_table()
 
-    if (is.null(predictions) || is.null(predictions$offsets) || is.null(predictions$normalized_intensities)) {
+    reset_spectrum_traces <- function(message = "Predicted spectrum") {
       session$userData$spectrum_segment_x <- NULL
+
       plotlyProxyInvoke(
         proxy,
         "restyle",
@@ -1203,7 +1229,24 @@ server <- function(input, output, session) {
         list(traces$peaks)
       )
 
-      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = "Predicted spectrum")))
+      if (!is.null(traces$isotopes)) {
+        plotlyProxyInvoke(
+          proxy,
+          "restyle",
+          list(
+            x = wrap_restyle_vector(NA_real_),
+            y = wrap_restyle_vector(NA_real_),
+            text = wrap_restyle_vector(NA_character_)
+          ),
+          list(traces$isotopes)
+        )
+      }
+
+      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = message)))
+    }
+
+    if (is.null(predictions) || is.null(predictions$offsets) || is.null(predictions$normalized_intensities)) {
+      reset_spectrum_traces()
       return()
     }
 
@@ -1213,49 +1256,49 @@ server <- function(input, output, session) {
     normalized_matrix <- predictions$normalized_intensities
 
     if (is.na(idx) || idx > nrow(normalized_matrix)) {
-      plotlyProxyInvoke(
-        proxy,
-        "restyle",
-        list(
-          y = wrap_restyle_vector(NA_real_),
-          text = wrap_restyle_vector(NA_character_)
-        ),
-        list(traces$peaks)
-      )
-      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = "Predicted spectrum")))
+      reset_spectrum_traces()
       return()
     }
 
     normalized_row <- as.numeric(normalized_matrix[idx, , drop = TRUE])
 
     if (length(normalized_row) == 0) {
-      plotlyProxyInvoke(
-        proxy,
-        "restyle",
-        list(
-          y = wrap_restyle_vector(NA_real_),
-          text = wrap_restyle_vector(NA_character_)
-        ),
-        list(traces$peaks)
-      )
-      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = "Predicted spectrum")))
+      reset_spectrum_traces()
       return()
     }
 
     segment_template <- predictions$segment_template %||%
       build_spectrum_segment_template(predictions$fragments, predictions$mz)
 
-    y_values <- build_stem_segment_y(normalized_row)
-    text_values <- build_spectrum_tooltip_vector(segment_template$tooltip_prefix, normalized_row)
+    isotope_mask <- predictions$isotope_mask %||% is_isotope_annotation(predictions$fragments)
+    if (length(isotope_mask) != length(normalized_row)) {
+      isotope_mask <- rep(FALSE, length(normalized_row))
+    }
+    isotope_template <- predictions$isotope_segment_template %||%
+      build_spectrum_segment_template(predictions$fragments[isotope_mask], predictions$mz[isotope_mask])
+
+    segment_cache <- session$userData$spectrum_segment_x
+
+    if (is.null(segment_cache) || !is.list(segment_cache)) {
+      segment_cache <- list(peaks = NULL, isotopes = NULL)
+    }
+
+    primary_heights <- normalized_row
+    primary_heights[isotope_mask] <- 0
+
+    isotope_heights <- normalized_row[isotope_mask]
+
+    y_values <- build_stem_segment_y(primary_heights)
+    text_values <- build_spectrum_tooltip_vector(segment_template$tooltip_prefix, ifelse(isotope_mask, NA, normalized_row))
 
     restyle_payload <- list(
-      y = wrap_restyle_vector(y_values),
-      text = wrap_restyle_vector(text_values)
+      y = wrap_restyle_vector(if (length(y_values) > 0) y_values else NA_real_),
+      text = wrap_restyle_vector(if (length(text_values) > 0) text_values else NA_character_)
     )
 
-    if (is.null(session$userData$spectrum_segment_x)) {
-      restyle_payload$x <- wrap_restyle_vector(segment_template$x)
-      session$userData$spectrum_segment_x <- segment_template$x
+    if (is.null(segment_cache$peaks)) {
+      restyle_payload$x <- wrap_restyle_vector(if (length(segment_template$x) > 0) segment_template$x else NA_real_)
+      segment_cache$peaks <- segment_template$x
     }
 
     plotlyProxyInvoke(
@@ -1264,6 +1307,33 @@ server <- function(input, output, session) {
       restyle_payload,
       list(traces$peaks)
     )
+
+    isotope_payload <- list(
+      y = wrap_restyle_vector(if (length(isotope_heights) > 0) build_stem_segment_y(isotope_heights) else NA_real_),
+      text = wrap_restyle_vector(
+        if (length(isotope_heights) > 0) {
+          build_spectrum_tooltip_vector(isotope_template$tooltip_prefix, isotope_heights)
+        } else {
+          NA_character_
+        }
+      )
+    )
+
+    if (is.null(segment_cache$isotopes)) {
+      isotope_payload$x <- wrap_restyle_vector(if (length(isotope_template$x) > 0) isotope_template$x else NA_real_)
+      segment_cache$isotopes <- isotope_template$x
+    }
+
+    if (!is.null(traces$isotopes)) {
+      plotlyProxyInvoke(
+        proxy,
+        "restyle",
+        isotope_payload,
+        list(traces$isotopes)
+      )
+    }
+
+    session$userData$spectrum_segment_x <- segment_cache
 
     title_text <- sprintf(
       "Predicted spectrum at %s NCE (offset %+0.3f m/z)",
