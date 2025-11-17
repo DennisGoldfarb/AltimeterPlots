@@ -2175,20 +2175,20 @@ server <- function(input, output, session) {
           range_values <- NULL
         }
 
+        suffix <- axis_suffixes[[panel_name]] %||% ""
+        axis_name <- paste0("xaxis", suffix)
+
         if (!is.null(range_values)) {
-          suffix <- axis_suffixes[[panel_name]] %||% ""
-          axis_name <- paste0("xaxis", suffix)
-          tick0_value <- panel$x_tick0
+          axis_updates[[paste0(axis_name, ".range")]] <- range_values
+          axis_updates[[paste0(axis_name, ".autorange")]] <- FALSE
+        }
 
-          axis_payload <- list(range = range_values, autorange = FALSE)
+        tick0_value <- panel$x_tick0
 
-          if (is.numeric(tick0_value) && is.finite(tick0_value)) {
-            axis_payload$tickmode <- "linear"
-            axis_payload$tick0 <- tick0_value
-            axis_payload$dtick <- 1
-          }
-
-          axis_updates[[axis_name]] <- axis_payload
+        if (is.numeric(tick0_value) && is.finite(tick0_value)) {
+          axis_updates[[paste0(axis_name, ".tickmode")]] <- "linear"
+          axis_updates[[paste0(axis_name, ".tick0")]] <- tick0_value
+          axis_updates[[paste0(axis_name, ".dtick")]] <- 1
         }
       }
 
