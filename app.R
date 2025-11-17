@@ -494,8 +494,18 @@ ui <- fluidPage(
         label = "Isolation window width (m/z)",
         min = 0.1,
         max = 10,
-        value = 1.6,
+        value = 2.0,
         step = 0.1
+      ),
+      div(
+        class = "d-flex gap-2",
+        actionButton("isolation_width_decrement", "-0.1 width"),
+        actionButton("isolation_width_increment", "+0.1 width")
+      ),
+      div(
+        class = "d-flex gap-2 mt-2",
+        actionButton("isolation_center_left", "Center -0.1 m/z"),
+        actionButton("isolation_center_right", "Center +0.1 m/z")
       ),
       div(
         class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
@@ -541,6 +551,7 @@ server <- function(input, output, session) {
   nce_playing <- reactiveVal(FALSE)
   nce_direction <- reactiveVal(1)
   nce_timer <- reactiveTimer(200)
+  isolation_center_offset <- reactiveVal(0)
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -565,6 +576,7 @@ server <- function(input, output, session) {
 
     profile <- compute_isotope_profile(input$peptide, input$charge)
     profile$message <- NULL
+    isolation_center_offset(0)
     profile
   }, ignoreNULL = TRUE)
 
@@ -599,7 +611,8 @@ server <- function(input, output, session) {
 
     distribution <- profile$distribution
 
-    center <- profile$monoisotopic_mz
+    center_offset <- isolation_center_offset() %||% 0
+    center <- profile$monoisotopic_mz + center_offset
     width <- input$isolation_width %||% 0
     half_width <- max(0, width) / 2
 
@@ -798,6 +811,28 @@ server <- function(input, output, session) {
     current <- isolate(input$nce)
     new_value <- max(20, ifelse(is.null(current), 30, current - 0.1))
     updateSliderInput(session, "nce", value = new_value)
+  })
+
+  observeEvent(input$isolation_width_increment, {
+    current <- isolate(input$isolation_width %||% 0)
+    new_value <- min(10, current + 0.1)
+    updateNumericInput(session, "isolation_width", value = new_value)
+  })
+
+  observeEvent(input$isolation_width_decrement, {
+    current <- isolate(input$isolation_width %||% 0)
+    new_value <- max(0.1, current - 0.1)
+    updateNumericInput(session, "isolation_width", value = new_value)
+  })
+
+  observeEvent(input$isolation_center_left, {
+    offset <- isolation_center_offset() %||% 0
+    isolation_center_offset(offset - 0.1)
+  })
+
+  observeEvent(input$isolation_center_right, {
+    offset <- isolation_center_offset() %||% 0
+    isolation_center_offset(offset + 0.1)
   })
 
   observeEvent(input$nce_play, {
