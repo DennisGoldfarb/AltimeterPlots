@@ -1021,6 +1021,26 @@ build_zoom_fragment_panels <- function(fragments, mz_values, isotope_mask, targe
     primary_mask <- base_mask & !isotope_mask
     isotope_only_mask <- base_mask & isotope_mask
 
+    primary_indices <- which(primary_mask)
+    isotope_indices <- which(isotope_only_mask)
+
+    monoisotopic_mz <- NA_real_
+
+    if (length(primary_indices) > 0) {
+      primary_mz_values <- mz_values[primary_indices]
+      primary_mz_values <- primary_mz_values[is.finite(primary_mz_values)]
+
+      if (length(primary_mz_values) > 0) {
+        monoisotopic_mz <- primary_mz_values[[1]]
+      }
+    }
+
+    axis_range <- if (is.finite(monoisotopic_mz)) {
+      c(monoisotopic_mz - 0.5, monoisotopic_mz + 4)
+    } else {
+      rep(NA_real_, 2)
+    }
+
     padding_mz <- NA_real_
 
     if (any(base_mask)) {
@@ -1046,13 +1066,14 @@ build_zoom_fragment_panels <- function(fragments, mz_values, isotope_mask, targe
       name = panel_name,
       padding_mz = padding_mz,
       peaks = list(
-        indices = which(primary_mask),
+        indices = primary_indices,
         template = build_spectrum_segment_template(fragments[primary_mask], mz_values[primary_mask])
       ),
       isotopes = list(
-        indices = which(isotope_only_mask),
+        indices = isotope_indices,
         template = build_spectrum_segment_template(fragments[isotope_only_mask], mz_values[isotope_only_mask])
-      )
+      ),
+      x_range = if (all(is.finite(axis_range))) axis_range else NULL
     )
   })
 
@@ -1628,6 +1649,7 @@ server <- function(input, output, session) {
     session$userData$fragment_zoom_plot_ready <- FALSE
     session$userData$fragment_zoom_trace_indices <- NULL
     session$userData$fragment_zoom_segment_x <- NULL
+    session$userData$fragment_zoom_axis_suffixes <- NULL
 
     targets <- zoom_fragment_targets
 
@@ -1673,16 +1695,17 @@ server <- function(input, output, session) {
 
     layout_args <- list(
       showlegend = FALSE,
-      title = "Fragment zoom",
       hovermode = "x",
       margin = list(t = 60, b = 80)
     )
 
     annotations <- vector("list", length(targets))
+    axis_suffixes <- character(length(targets))
 
     for (i in seq_along(targets)) {
       suffix <- if (i == 1) "" else as.character(i)
-      layout_args[[paste0("xaxis", suffix)]] <- list(title = "m/z")
+      axis_suffixes[[i]] <- suffix
+      layout_args[[paste0("xaxis", suffix)]] <- list(title = "m/z", showgrid = FALSE)
       layout_args[[paste0("yaxis", suffix)]] <- list(
         title = "",
         showticklabels = FALSE,
@@ -1690,7 +1713,8 @@ server <- function(input, output, session) {
         automargin = TRUE,
         zeroline = FALSE,
         rangemode = "tozero",
-        autorange = TRUE
+        autorange = TRUE,
+        showgrid = FALSE
       )
 
       annotations[[i]] <- list(
@@ -1717,6 +1741,7 @@ server <- function(input, output, session) {
     }
 
     session$userData$fragment_zoom_trace_indices <- trace_map
+    session$userData$fragment_zoom_axis_suffixes <- setNames(axis_suffixes, targets)
     session$userData$fragment_zoom_plot_ready <- TRUE
 
     fig
@@ -2005,6 +2030,9 @@ server <- function(input, output, session) {
       }
     }
 
+    axis_suffixes <- session$userData$fragment_zoom_axis_suffixes
+    axis_updates <- list()
+
     for (panel_name in panel_names) {
       panel <- zoom_panels[[panel_name]]
       panel_traces <- traces[[panel_name]]
@@ -2110,10 +2138,28 @@ server <- function(input, output, session) {
         )
       }
 
+      if (!is.null(axis_suffixes) && panel_name %in% names(axis_suffixes)) {
+        range_values <- panel$x_range
+
+        if (is.null(range_values) || length(range_values) != 2 || !all(is.finite(range_values))) {
+          range_values <- NULL
+        }
+
+        if (!is.null(range_values)) {
+          suffix <- axis_suffixes[[panel_name]] %||% ""
+          axis_name <- paste0("xaxis", suffix)
+          axis_updates[[axis_name]] <- list(range = range_values, autorange = FALSE)
+        }
+      }
+
       segment_cache[[panel_name]] <- cache_entry
     }
 
     session$userData$fragment_zoom_segment_x <- segment_cache
+
+    if (length(axis_updates) > 0) {
+      plotlyProxyInvoke(proxy, "relayout", axis_updates)
+    }
   }, ignoreNULL = FALSE)
 
   observeEvent(input$nce_increment, {
