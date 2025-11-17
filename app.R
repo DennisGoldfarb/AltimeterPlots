@@ -465,15 +465,32 @@ build_fragment_point_traces <- function(nce_value, fragments, fragment_values, a
 
 build_isotope_segment_vectors <- function(peaks) {
   if (is.null(peaks) || nrow(peaks) == 0) {
-    return(list(x = numeric(0), xend = numeric(0), y = numeric(0), yend = numeric(0)))
+    return(list(x = numeric(0), y = numeric(0)))
   }
 
-  list(
-    x = peaks$mz,
-    xend = peaks$mz,
-    y = rep(0, nrow(peaks)),
-    yend = peaks$percent
-  )
+  percent <- peaks$percent
+
+  if (is.null(percent)) {
+    abundance <- peaks$abundance
+    percent <- if (is.null(abundance)) rep(0, nrow(peaks)) else abundance * 100
+  }
+
+  percent[!is.finite(percent)] <- 0
+
+  x <- rep(peaks$mz, each = 3)
+  y <- numeric(length(x))
+
+  indices <- seq_along(x)
+  start_points <- indices[(indices - 1) %% 3 == 0]
+  end_points <- indices[(indices - 2) %% 3 == 0]
+  separators <- indices[indices %% 3 == 0]
+
+  y[start_points] <- 0
+  y[end_points] <- percent
+  x[separators] <- NA_real_
+  y[separators] <- NA_real_
+
+  list(x = x, y = y)
 }
 
 build_isotope_plot_components <- function(profile, width, center_offset) {
@@ -597,8 +614,8 @@ ui <- fluidPage(
       ),
       div(
         class = "d-flex gap-2 mt-2",
-        actionButton("isolation_center_left", "Center -0.01 m/z"),
-        actionButton("isolation_center_right", "Center +0.01 m/z")
+        actionButton("isolation_center_left", "Center -0.005 m/z"),
+        actionButton("isolation_center_right", "Center +0.005 m/z")
       ),
       div(
         class = "d-flex gap-2 mt-2",
@@ -736,21 +753,21 @@ server <- function(input, output, session) {
       name = "Isolation window"
     )
 
-    plot <- plot %>% add_segments(
+    plot <- plot %>% add_trace(
       x = ensure_plotly_vector(inside_segments$x),
-      xend = ensure_plotly_vector(inside_segments$xend),
       y = ensure_plotly_vector(inside_segments$y),
-      yend = ensure_plotly_vector(inside_segments$yend),
+      type = "scatter",
+      mode = "lines",
       line = list(color = "#193c55", width = 4),
       hoverinfo = "x+y",
       name = "Inside window"
     )
 
-    plot <- plot %>% add_segments(
+    plot <- plot %>% add_trace(
       x = ensure_plotly_vector(outside_segments$x),
-      xend = ensure_plotly_vector(outside_segments$xend),
       y = ensure_plotly_vector(outside_segments$y),
-      yend = ensure_plotly_vector(outside_segments$yend),
+      type = "scatter",
+      mode = "lines",
       line = list(color = "rgba(25,60,85,0.45)", width = 3),
       hoverinfo = "x+y",
       name = "Outside window"
@@ -804,9 +821,7 @@ server <- function(input, output, session) {
       "restyle",
       list(
         x = wrap_restyle_vector(components$inside_segments$x),
-        xend = wrap_restyle_vector(components$inside_segments$xend),
-        y = wrap_restyle_vector(components$inside_segments$y),
-        yend = wrap_restyle_vector(components$inside_segments$yend)
+        y = wrap_restyle_vector(components$inside_segments$y)
       ),
       list(traces$inside)
     )
@@ -816,9 +831,7 @@ server <- function(input, output, session) {
       "restyle",
       list(
         x = wrap_restyle_vector(components$outside_segments$x),
-        xend = wrap_restyle_vector(components$outside_segments$xend),
-        y = wrap_restyle_vector(components$outside_segments$y),
-        yend = wrap_restyle_vector(components$outside_segments$yend)
+        y = wrap_restyle_vector(components$outside_segments$y)
       ),
       list(traces$outside)
     )
@@ -960,12 +973,12 @@ server <- function(input, output, session) {
 
   observeEvent(input$isolation_center_left, {
     offset <- isolation_center_offset() %||% 0
-    isolation_center_offset(offset - 0.01)
+    isolation_center_offset(offset - 0.005)
   })
 
   observeEvent(input$isolation_center_right, {
     offset <- isolation_center_offset() %||% 0
-    isolation_center_offset(offset + 0.01)
+    isolation_center_offset(offset + 0.005)
   })
 
   observeEvent(input$nce_play, {
@@ -1012,11 +1025,9 @@ server <- function(input, output, session) {
   })
 
   observe({
-    isolation_center_timer()
+    req(isTRUE(isolation_center_playing()))
 
-    if (!isTRUE(isolation_center_playing())) {
-      return()
-    }
+    isolation_center_timer()
 
     profile <- isolate(precursor_profile())
 
@@ -1025,7 +1036,7 @@ server <- function(input, output, session) {
     }
 
     direction <- isolation_center_direction()
-    step <- 0.01
+    step <- 0.005
     limit <- 2
     offset <- isolation_center_offset() %||% 0
     next_offset <- offset + (step * direction)
