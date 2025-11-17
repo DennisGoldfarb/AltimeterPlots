@@ -16,6 +16,7 @@ koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_sp
 koina_isotope_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_isotopes/infer"
 proton_mass <- 1.007276466812
 min_isotope_probability <- 0.01
+zoom_fragment_targets <- c("y1", "y5", "y10", "y13")
 
 `%||%` <- function(lhs, rhs) {
   if (!is.null(lhs)) lhs else rhs
@@ -975,6 +976,67 @@ is_isotope_annotation <- function(annotations) {
   mask
 }
 
+strip_isotope_suffix <- function(annotations) {
+  if (length(annotations) == 0) {
+    return(character(0))
+  }
+
+  values <- as.character(annotations)
+  values[is.na(values)] <- ""
+  trimmed <- trimws(values)
+  stripped <- sub("\\+[1-4]?i$", "", trimmed, ignore.case = TRUE, perl = TRUE)
+  stripped
+}
+
+build_zoom_fragment_panels <- function(fragments, mz_values, isotope_mask, targets) {
+  if (length(targets) == 0) {
+    return(list())
+  }
+
+  fragments <- fragments %||% character(0)
+  mz_values <- mz_values %||% numeric(0)
+
+  if (length(mz_values) != length(fragments)) {
+    mz_values <- rep_len(mz_values, length(fragments))
+  }
+
+  if (length(isotope_mask) != length(fragments)) {
+    isotope_mask <- rep(FALSE, length(fragments))
+  }
+
+  normalized <- tolower(strip_isotope_suffix(fragments))
+  target_keys <- tolower(targets)
+
+  panels <- lapply(seq_along(targets), function(i) {
+    target_key <- target_keys[[i]]
+    panel_name <- targets[[i]] %||% target_key %||% ""
+
+    if (!nzchar(target_key)) {
+      base_mask <- rep(FALSE, length(fragments))
+    } else {
+      base_mask <- normalized == target_key
+    }
+
+    primary_mask <- base_mask & !isotope_mask
+    isotope_only_mask <- base_mask & isotope_mask
+
+    list(
+      name = panel_name,
+      peaks = list(
+        indices = which(primary_mask),
+        template = build_spectrum_segment_template(fragments[primary_mask], mz_values[primary_mask])
+      ),
+      isotopes = list(
+        indices = which(isotope_only_mask),
+        template = build_spectrum_segment_template(fragments[isotope_only_mask], mz_values[isotope_only_mask])
+      )
+    )
+  })
+
+  names(panels) <- vapply(panels, function(panel) panel$name %||% "", character(1))
+  panels
+}
+
 compute_isotope_intensity_share <- function(intensities, isotope_mask) {
   if (length(intensities) == 0 || length(isotope_mask) == 0) {
     return(NA_real_)
@@ -1186,7 +1248,9 @@ ui <- fluidPage(
         column(
           width = 6,
           h4("Predicted spectrum"),
-          plotlyOutput("spectrum_plot", height = "400px")
+          plotlyOutput("spectrum_plot", height = "400px"),
+          h5("Fragment zoom"),
+          plotlyOutput("fragment_zoom_plot", height = "250px")
         )
       )
     )
@@ -1206,6 +1270,9 @@ server <- function(input, output, session) {
   session$userData$spectrum_plot_ready <- FALSE
   session$userData$spectrum_trace_indices <- NULL
   session$userData$spectrum_segment_x <- NULL
+  session$userData$fragment_zoom_plot_ready <- FALSE
+  session$userData$fragment_zoom_trace_indices <- NULL
+  session$userData$fragment_zoom_segment_x <- NULL
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -1249,12 +1316,14 @@ server <- function(input, output, session) {
     if (is.null(efficiency_matrix) || nrow(efficiency_matrix) == 0) {
       isotope_prediction_table(NULL)
       session$userData$spectrum_segment_x <- NULL
+      session$userData$fragment_zoom_segment_x <- NULL
       return()
     }
 
     nce_value <- input$nce %||% 30
     isotope_prediction_table(NULL)
     session$userData$spectrum_segment_x <- NULL
+    session$userData$fragment_zoom_segment_x <- NULL
 
     pred_values <- predictions()
     reference_fragments <- NULL
@@ -1290,9 +1359,11 @@ server <- function(input, output, session) {
           nce = nce_value,
           segment_template = segment_template,
           isotope_mask = isotope_mask,
-          isotope_segment_template = isotope_segment_template
+          isotope_segment_template = isotope_segment_template,
+          zoom_panels = build_zoom_fragment_panels(result$fragments, result$mz, isotope_mask, zoom_fragment_targets)
         ))
         session$userData$spectrum_segment_x <- NULL
+        session$userData$fragment_zoom_segment_x <- NULL
       })
     }, error = function(e) {
       showNotification(
@@ -1302,6 +1373,7 @@ server <- function(input, output, session) {
       )
       isotope_prediction_table(NULL)
       session$userData$spectrum_segment_x <- NULL
+      session$userData$fragment_zoom_segment_x <- NULL
     })
   }, ignoreNULL = TRUE)
 
@@ -1529,6 +1601,85 @@ server <- function(input, output, session) {
     plot
   })
 
+  output$fragment_zoom_plot <- renderPlotly({
+    session$userData$fragment_zoom_plot_ready <- FALSE
+    session$userData$fragment_zoom_trace_indices <- NULL
+    session$userData$fragment_zoom_segment_x <- NULL
+
+    targets <- zoom_fragment_targets
+
+    if (length(targets) == 0) {
+      session$userData$fragment_zoom_plot_ready <- TRUE
+      session$userData$fragment_zoom_trace_indices <- list()
+      return(NULL)
+    }
+
+    panel_plots <- lapply(seq_along(targets), function(i) {
+      panel_name <- targets[[i]]
+      showlegend <- i == 1
+
+      panel_plot <- plot_ly()
+      panel_plot <- panel_plot %>% add_trace(
+        x = ensure_plotly_vector(NA_real_),
+        y = ensure_plotly_vector(NA_real_),
+        type = "scatter",
+        mode = "lines",
+        line = list(color = "#193c55", width = 2),
+        hoverinfo = "text",
+        text = "",
+        name = sprintf("%s peaks", panel_name),
+        showlegend = showlegend
+      )
+
+      panel_plot <- panel_plot %>% add_trace(
+        x = ensure_plotly_vector(NA_real_),
+        y = ensure_plotly_vector(NA_real_),
+        type = "scatter",
+        mode = "lines",
+        line = list(color = "rgba(255,127,14,0.5)", width = 4),
+        hoverinfo = "text",
+        text = "",
+        name = sprintf("%s isotopes", panel_name),
+        showlegend = showlegend
+      )
+
+      panel_plot
+    })
+
+    subplot_args <- list(panel_plots, nrows = 1, shareX = FALSE, shareY = FALSE, titleX = TRUE, titleY = TRUE)
+    fig <- do.call(subplot, subplot_args)
+
+    layout_args <- list(
+      showlegend = TRUE,
+      legend = list(orientation = "h", x = 0, y = -0.25),
+      title = "Fragment zoom",
+      hovermode = "x",
+      margin = list(t = 60, b = 80)
+    )
+
+    for (i in seq_along(targets)) {
+      suffix <- if (i == 1) "" else as.character(i)
+      layout_args[[paste0("xaxis", suffix)]] <- list(title = "m/z")
+      layout_args[[paste0("yaxis", suffix)]] <- list(title = sprintf("%s fragments", targets[[i]]), range = c(0, 1.05))
+    }
+
+    layout_args$p <- fig
+    fig <- do.call(plotly::layout, layout_args)
+
+    trace_map <- setNames(vector("list", length(targets)), targets)
+    current_index <- 0
+
+    for (name in targets) {
+      trace_map[[name]] <- list(peaks = current_index, isotopes = current_index + 1)
+      current_index <- current_index + 2
+    }
+
+    session$userData$fragment_zoom_trace_indices <- trace_map
+    session$userData$fragment_zoom_plot_ready <- TRUE
+
+    fig
+  })
+
   observeEvent({
     list(isotope_prediction_table(), isolation_center_offset())
   }, {
@@ -1691,6 +1842,212 @@ server <- function(input, output, session) {
     )
 
     plotlyProxyInvoke(proxy, "relayout", layout_update)
+  }, ignoreNULL = FALSE)
+
+  observeEvent({
+    list(isotope_prediction_table(), isolation_center_offset())
+  }, {
+    traces <- session$userData$fragment_zoom_trace_indices
+
+    if (is.null(traces) || !isTRUE(session$userData$fragment_zoom_plot_ready)) {
+      return()
+    }
+
+    proxy <- plotlyProxy("fragment_zoom_plot", session)
+
+    reset_zoom_traces <- function() {
+      session$userData$fragment_zoom_segment_x <- NULL
+
+      if (is.null(traces) || length(traces) == 0) {
+        return()
+      }
+
+      for (panel_name in names(traces)) {
+        panel_traces <- traces[[panel_name]]
+
+        if (is.null(panel_traces)) {
+          next
+        }
+
+        for (kind in c("peaks", "isotopes")) {
+          idx <- panel_traces[[kind]]
+
+          if (is.null(idx)) {
+            next
+          }
+
+          plotlyProxyInvoke(
+            proxy,
+            "restyle",
+            list(
+              x = wrap_restyle_vector(NA_real_),
+              y = wrap_restyle_vector(NA_real_),
+              text = wrap_restyle_vector(NA_character_)
+            ),
+            list(idx)
+          )
+        }
+      }
+    }
+
+    predictions <- isotope_prediction_table()
+
+    if (is.null(predictions) || is.null(predictions$offsets) || is.null(predictions$normalized_intensities)) {
+      reset_zoom_traces()
+      return()
+    }
+
+    offsets <- predictions$offsets
+    idx <- closest_offset_index(offsets, isolation_center_offset() %||% 0)
+    normalized_matrix <- predictions$normalized_intensities
+
+    if (is.na(idx) || idx > nrow(normalized_matrix)) {
+      reset_zoom_traces()
+      return()
+    }
+
+    zoom_panels <- predictions$zoom_panels %||% build_zoom_fragment_panels(
+      predictions$fragments,
+      predictions$mz,
+      predictions$isotope_mask %||% is_isotope_annotation(predictions$fragments),
+      zoom_fragment_targets
+    )
+
+    if (length(zoom_panels) == 0) {
+      reset_zoom_traces()
+      return()
+    }
+
+    normalized_row <- as.numeric(normalized_matrix[idx, , drop = TRUE])
+
+    if (length(normalized_row) == 0) {
+      reset_zoom_traces()
+      return()
+    }
+
+    panel_names <- names(zoom_panels)
+
+    if (length(panel_names) == 0) {
+      reset_zoom_traces()
+      return()
+    }
+
+    segment_cache <- session$userData$fragment_zoom_segment_x
+
+    if (is.null(segment_cache) || !is.list(segment_cache)) {
+      segment_cache <- vector("list", length(panel_names))
+      names(segment_cache) <- panel_names
+    } else {
+      segment_cache <- segment_cache[panel_names]
+      if (length(segment_cache) != length(panel_names)) {
+        segment_cache <- vector("list", length(panel_names))
+        names(segment_cache) <- panel_names
+      }
+    }
+
+    for (panel_name in panel_names) {
+      entry <- segment_cache[[panel_name]]
+
+      if (is.null(entry) || !is.list(entry)) {
+        segment_cache[[panel_name]] <- list(peaks = NULL, isotopes = NULL)
+      } else {
+        if (!("peaks" %in% names(entry))) {
+          entry$peaks <- NULL
+        }
+
+        if (!("isotopes" %in% names(entry))) {
+          entry$isotopes <- NULL
+        }
+
+        segment_cache[[panel_name]] <- entry
+      }
+    }
+
+    for (panel_name in panel_names) {
+      panel <- zoom_panels[[panel_name]]
+      panel_traces <- traces[[panel_name]]
+
+      if (is.null(panel) || is.null(panel_traces)) {
+        next
+      }
+
+      cache_entry <- segment_cache[[panel_name]]
+
+      if (is.null(cache_entry) || !is.list(cache_entry)) {
+        cache_entry <- list(peaks = NULL, isotopes = NULL)
+      }
+
+      primary_indices <- panel$peaks$indices %||% integer(0)
+      isotope_indices <- panel$isotopes$indices %||% integer(0)
+
+      primary_values <- if (length(primary_indices) > 0) normalized_row[primary_indices] else numeric(0)
+      isotope_values <- if (length(isotope_indices) > 0) normalized_row[isotope_indices] else numeric(0)
+
+      primary_template <- panel$peaks$template %||% list(x = numeric(0), tooltip_prefix = character(0))
+      isotope_template <- panel$isotopes$template %||% list(x = numeric(0), tooltip_prefix = character(0))
+
+      primary_payload <- list(
+        y = wrap_restyle_vector(
+          if (length(primary_values) > 0) build_stem_segment_y(primary_values) else NA_real_
+        ),
+        text = wrap_restyle_vector(
+          if (length(primary_values) > 0) {
+            build_spectrum_tooltip_vector(primary_template$tooltip_prefix, primary_values)
+          } else {
+            NA_character_
+          }
+        )
+      )
+
+      if (is.null(cache_entry$peaks)) {
+        primary_payload$x <- wrap_restyle_vector(
+          if (!is.null(primary_template$x) && length(primary_template$x) > 0) primary_template$x else NA_real_
+        )
+        cache_entry$peaks <- primary_template$x
+      }
+
+      if (!is.null(panel_traces$peaks)) {
+        plotlyProxyInvoke(
+          proxy,
+          "restyle",
+          primary_payload,
+          list(panel_traces$peaks)
+        )
+      }
+
+      isotope_payload <- list(
+        y = wrap_restyle_vector(
+          if (length(isotope_values) > 0) build_stem_segment_y(isotope_values) else NA_real_
+        ),
+        text = wrap_restyle_vector(
+          if (length(isotope_values) > 0) {
+            build_spectrum_tooltip_vector(isotope_template$tooltip_prefix, isotope_values)
+          } else {
+            NA_character_
+          }
+        )
+      )
+
+      if (is.null(cache_entry$isotopes)) {
+        isotope_payload$x <- wrap_restyle_vector(
+          if (!is.null(isotope_template$x) && length(isotope_template$x) > 0) isotope_template$x else NA_real_
+        )
+        cache_entry$isotopes <- isotope_template$x
+      }
+
+      if (!is.null(panel_traces$isotopes)) {
+        plotlyProxyInvoke(
+          proxy,
+          "restyle",
+          isotope_payload,
+          list(panel_traces$isotopes)
+        )
+      }
+
+      segment_cache[[panel_name]] <- cache_entry
+    }
+
+    session$userData$fragment_zoom_segment_x <- segment_cache
   }, ignoreNULL = FALSE)
 
   observeEvent(input$nce_increment, {
