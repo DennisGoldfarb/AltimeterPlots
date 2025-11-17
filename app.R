@@ -1693,7 +1693,10 @@ server <- function(input, output, session) {
       panel_plot
     })
 
-    subplot_args <- list(panel_plots, nrows = 1, shareX = FALSE, shareY = FALSE, titleX = TRUE, titleY = TRUE)
+    subplot_args <- c(
+      panel_plots,
+      list(nrows = 1, shareX = FALSE, shareY = FALSE, titleX = TRUE, titleY = TRUE)
+    )
     fig <- do.call(subplot, subplot_args)
 
     layout_args <- list(
