@@ -17,6 +17,7 @@ koina_isotope_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter
 proton_mass <- 1.007276466812
 min_isotope_probability <- 0.01
 zoom_fragment_targets <- c("y1", "y5", "y10", "y13")
+zoom_fragment_left_padding <- 0.05
 
 `%||%` <- function(lhs, rhs) {
   if (!is.null(lhs)) lhs else rhs
@@ -1020,8 +1021,30 @@ build_zoom_fragment_panels <- function(fragments, mz_values, isotope_mask, targe
     primary_mask <- base_mask & !isotope_mask
     isotope_only_mask <- base_mask & isotope_mask
 
+    padding_mz <- NA_real_
+
+    if (any(base_mask)) {
+      finite_mz <- mz_values[base_mask]
+      finite_mz <- finite_mz[is.finite(finite_mz)]
+
+      if (length(finite_mz) > 0) {
+        padding_delta <- zoom_fragment_left_padding %||% 0
+
+        if (!is.numeric(padding_delta) || !is.finite(padding_delta) || padding_delta < 0) {
+          padding_delta <- 0
+        }
+
+        padding_mz <- min(finite_mz) - padding_delta
+
+        if (!is.finite(padding_mz)) {
+          padding_mz <- NA_real_
+        }
+      }
+    }
+
     list(
       name = panel_name,
+      padding_mz = padding_mz,
       peaks = list(
         indices = which(primary_mask),
         template = build_spectrum_segment_template(fragments[primary_mask], mz_values[primary_mask])
@@ -1623,7 +1646,7 @@ server <- function(input, output, session) {
         y = ensure_plotly_vector(NA_real_),
         type = "scatter",
         mode = "lines",
-        line = list(color = "#193c55", width = 2),
+        line = list(color = "#193c55", width = 4),
         hoverinfo = "text",
         text = "",
         name = panel_name,
@@ -2005,13 +2028,28 @@ server <- function(input, output, session) {
       primary_template <- panel$peaks$template %||% list(x = numeric(0), tooltip_prefix = character(0))
       isotope_template <- panel$isotopes$template %||% list(x = numeric(0), tooltip_prefix = character(0))
 
+      padding_mz <- panel$padding_mz %||% NA_real_
+      has_padding <- is.finite(padding_mz)
+      padding_segment_x <- if (has_padding) build_stem_segment_x(padding_mz) else numeric(0)
+      padding_values <- if (has_padding) 0 else numeric(0)
+      padding_tooltips <- if (has_padding) NA_character_ else character(0)
+
+      primary_prefixes <- primary_template$tooltip_prefix %||% character(0)
+      primary_x_template <- primary_template$x %||% numeric(0)
+
+      if (has_padding && length(primary_values) > 0) {
+        primary_values <- c(padding_values, primary_values)
+        primary_prefixes <- c(padding_tooltips, primary_prefixes)
+        primary_x_template <- c(padding_segment_x, primary_x_template)
+      }
+
       primary_payload <- list(
         y = wrap_restyle_vector(
           if (length(primary_values) > 0) build_stem_segment_y(primary_values) else NA_real_
         ),
         text = wrap_restyle_vector(
           if (length(primary_values) > 0) {
-            build_spectrum_tooltip_vector(primary_template$tooltip_prefix, primary_values)
+            build_spectrum_tooltip_vector(primary_prefixes, primary_values)
           } else {
             NA_character_
           }
@@ -2020,9 +2058,9 @@ server <- function(input, output, session) {
 
       if (is.null(cache_entry$peaks)) {
         primary_payload$x <- wrap_restyle_vector(
-          if (!is.null(primary_template$x) && length(primary_template$x) > 0) primary_template$x else NA_real_
+          if (length(primary_x_template) > 0) primary_x_template else NA_real_
         )
-        cache_entry$peaks <- primary_template$x
+        cache_entry$peaks <- primary_x_template
       }
 
       if (!is.null(panel_traces$peaks)) {
@@ -2034,13 +2072,22 @@ server <- function(input, output, session) {
         )
       }
 
+      isotope_prefixes <- isotope_template$tooltip_prefix %||% character(0)
+      isotope_x_template <- isotope_template$x %||% numeric(0)
+
+      if (has_padding && length(isotope_values) > 0) {
+        isotope_values <- c(padding_values, isotope_values)
+        isotope_prefixes <- c(padding_tooltips, isotope_prefixes)
+        isotope_x_template <- c(padding_segment_x, isotope_x_template)
+      }
+
       isotope_payload <- list(
         y = wrap_restyle_vector(
           if (length(isotope_values) > 0) build_stem_segment_y(isotope_values) else NA_real_
         ),
         text = wrap_restyle_vector(
           if (length(isotope_values) > 0) {
-            build_spectrum_tooltip_vector(isotope_template$tooltip_prefix, isotope_values)
+            build_spectrum_tooltip_vector(isotope_prefixes, isotope_values)
           } else {
             NA_character_
           }
@@ -2049,9 +2096,9 @@ server <- function(input, output, session) {
 
       if (is.null(cache_entry$isotopes)) {
         isotope_payload$x <- wrap_restyle_vector(
-          if (!is.null(isotope_template$x) && length(isotope_template$x) > 0) isotope_template$x else NA_real_
+          if (length(isotope_x_template) > 0) isotope_x_template else NA_real_
         )
-        cache_entry$isotopes <- isotope_template$x
+        cache_entry$isotopes <- isotope_x_template
       }
 
       if (!is.null(panel_traces$isotopes)) {
