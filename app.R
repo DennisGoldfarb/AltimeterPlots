@@ -375,7 +375,7 @@ build_fragment_point_traces <- function(nce_value, fragments, fragment_values, a
       y = c(target_value),
       type = "scatter",
       mode = "markers",
-      marker = list(color = "#ab1f25", size = 12),
+      marker = list(color = "#ab1f25", size = 6),
       hoverinfo = "x+y",
       showlegend = FALSE,
       xaxis = axes$xaxis,
@@ -574,25 +574,24 @@ server <- function(input, output, session) {
     point_indexes <- session$userData$fragment_point_traces
     if (!is.null(point_indexes) && length(point_indexes) > 0) {
       tracked_fragments <- intersect(fragments, names(point_indexes))
+      tracked_fragments <- tracked_fragments[!is.na(fragment_values[tracked_fragments])]
 
       if (length(tracked_fragments) > 0) {
-        for (fragment in tracked_fragments) {
-          trace_index <- point_indexes[[fragment]]
-          point_value <- fragment_values[[fragment]]
+        trace_indices <- as.list(unname(unlist(point_indexes[tracked_fragments])))
 
-          if (is.null(trace_index) || length(trace_index) == 0 || is.na(point_value)) {
-            next
-          }
+        if (length(trace_indices) > 0) {
+          x_updates <- lapply(tracked_fragments, function(fragment) list(input$nce))
+          y_updates <- lapply(tracked_fragments, function(fragment) list(fragment_values[[fragment]]))
 
           proxy <- plotlyProxyInvoke(
             proxy,
             "restyle",
             list(
-              x = list(list(input$nce)),
-              y = list(list(point_value)),
-              marker = list(color = "#ab1f25", size = 12)
+              x = x_updates,
+              y = y_updates,
+              marker = list(color = "#ab1f25", size = 6)
             ),
-            list(trace_index)
+            trace_indices
           )
         }
       }
