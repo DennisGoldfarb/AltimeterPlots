@@ -13,6 +13,10 @@ library(ggplot2)
 
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
 
+`%||%` <- function(lhs, rhs) {
+  if (!is.null(lhs)) lhs else rhs
+}
+
 # Helper that issues an HTTP inference request for a single peptide/charge pair
 # and parses the spline metadata.
 fetch_predictions <- function(sequence, charge) {
@@ -101,6 +105,23 @@ resolve_output <- function(output_map, candidates) {
   NULL
 }
 
+expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
+  coeffs_per_fragment <- ncol(coeff_matrix)
+  total_coeffs <- length(knots) - degree - 1
+  padding <- total_coeffs - coeffs_per_fragment
+
+  if (padding < 0 || padding %% 2 != 0) {
+    stop("Unable to align fragment coefficients with knot vector")
+  }
+
+  pad_each_side <- padding / 2
+
+  left_pad <- if (pad_each_side > 0) matrix(0, nrow = nrow(coeff_matrix), ncol = pad_each_side) else NULL
+  right_pad <- if (pad_each_side > 0) matrix(0, nrow = nrow(coeff_matrix), ncol = pad_each_side) else NULL
+
+  cbind(left_pad, coeff_matrix, right_pad)
+}
+
 evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200, max_fragments = 24) {
   fragments <- predictions$fragments
   coeff_matrix <- predictions$coefficients
@@ -127,39 +148,243 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
 
   x_vals <- seq(x_start, x_end, length.out = points)
   basis <- splines::splineDesign(knots = knots, x = x_vals, ord = degree + 1, outer.ok = TRUE)
-  total_coeffs <- ncol(basis)
-  coeffs_per_fragment <- ncol(coeff_matrix)
-  padding <- total_coeffs - coeffs_per_fragment
+  full_coeffs <- expand_fragment_coefficients(coeff_matrix, knots, degree)
+  value_matrix <- basis %*% t(full_coeffs)
 
-  if (padding < 0 || padding %% 2 != 0) {
-    stop("Unable to align fragment coefficients with knot vector")
-  }
-
-  pad_each_side <- padding / 2
-
-  curve_dfs <- lapply(seq_along(fragments), function(idx) {
-    fragment_coeffs <- coeff_matrix[idx, ]
-    full_coeffs <- c(rep(0, pad_each_side), fragment_coeffs, rep(0, pad_each_side))
-    values <- as.numeric(basis %*% full_coeffs)
-
-    data.frame(
-      Fragment = fragments[[idx]],
-      Position = x_vals,
-      Intensity = values,
-      stringsAsFactors = FALSE
-    )
-  })
-
-  curve_data <- do.call(rbind, curve_dfs)
+  curve_data <- data.frame(
+    Fragment = factor(rep(fragments, each = length(x_vals)), levels = fragments),
+    Position = rep(x_vals, times = length(fragments)),
+    Intensity = as.vector(value_matrix),
+    stringsAsFactors = FALSE
+  )
 
   if (nrow(curve_data) == 0) {
     return(curve_data)
   }
 
-  ordered_facets <- unique(fragments)
-  curve_data$Fragment <- factor(curve_data$Fragment, levels = ordered_facets)
+  attr(curve_data, "fragment_metadata") <- list(
+    fragments = fragments,
+    coefficients = coeff_matrix,
+    knots = knots,
+    degree = degree
+  )
 
   curve_data
+}
+
+fragment_intensity_ranges <- function(curve_df) {
+  if (nrow(curve_df) == 0) {
+    return(list())
+  }
+
+  fragments <- levels(curve_df$Fragment)
+
+  lapply(fragments, function(fragment) {
+    subset_df <- curve_df[curve_df$Fragment == fragment, , drop = FALSE]
+    range_vals <- range(subset_df$Intensity, na.rm = TRUE)
+
+    if (!all(is.finite(range_vals)) || range_vals[1] == range_vals[2]) {
+      # Expand to avoid zero height guides
+      midpoint <- ifelse(is.finite(range_vals[1]), range_vals[1], 0)
+      range_vals <- c(midpoint - 0.5, midpoint + 0.5)
+    }
+
+    range_vals
+  }) |>
+    setNames(fragments)
+}
+
+fragment_intensity_at_nce <- function(curve_df, nce_value) {
+  if (nrow(curve_df) == 0 || is.null(nce_value) || !is.finite(nce_value)) {
+    return(numeric())
+  }
+
+  metadata <- attr(curve_df, "fragment_metadata")
+
+  if (is.null(metadata)) {
+    return(numeric())
+  }
+
+  fragments <- metadata$fragments
+  coeff_matrix <- metadata$coefficients
+  knots <- metadata$knots
+  degree <- metadata$degree %||% 3
+
+  if (is.null(fragments) || length(fragments) == 0 || nrow(coeff_matrix) == 0) {
+    return(numeric())
+  }
+
+  full_coeffs <- expand_fragment_coefficients(coeff_matrix, knots, degree)
+  basis <- splines::splineDesign(knots = knots, x = nce_value, ord = degree + 1, outer.ok = TRUE)
+  basis_vec <- as.numeric(basis)
+  values <- as.numeric(full_coeffs %*% basis_vec)
+
+  setNames(values, fragments)
+}
+
+axis_ref_from_name <- function(axis_name, axis_letter) {
+  if (is.null(axis_name) || axis_name == paste0(axis_letter, "axis")) {
+    return(axis_letter)
+  }
+
+  sub("axis", "", axis_name)
+}
+
+extract_fragment_axis_map <- function(plotly_traces, fragments) {
+  axis_map <- list()
+
+  if (length(plotly_traces) == 0 || length(fragments) == 0) {
+    return(axis_map)
+  }
+
+  valid_types <- c("scatter", "scattergl")
+  line_traces <- Filter(
+    function(trace) {
+      trace_type <- trace$type %||% ""
+      trace_mode <- trace$mode
+
+      trace_type %in% valid_types && (is.null(trace_mode) || grepl("lines", trace_mode, fixed = TRUE))
+    },
+    plotly_traces
+  )
+
+  identify_fragment <- function(trace_name) {
+    if (is.null(trace_name) || !nzchar(trace_name)) {
+      return(NULL)
+    }
+
+    if (grepl("Fragment\\s*=", trace_name)) {
+      candidate <- trimws(sub(".*Fragment\\s*=\\s*([^,]+).*", "\\1", trace_name))
+      return(candidate)
+    }
+
+    if (grepl("Fragment\\s*:", trace_name)) {
+      candidate <- trimws(sub(".*Fragment\\s*:\\s*([^,]+).*", "\\1", trace_name))
+      return(candidate)
+    }
+
+    trimws(trace_name)
+  }
+
+  remaining_fragments <- fragments
+
+  for (trace in line_traces) {
+    fragment <- identify_fragment(trace$name)
+
+    if (is.null(fragment) || !(fragment %in% fragments)) {
+      if (length(remaining_fragments) == 0) {
+        next
+      }
+
+      fragment <- remaining_fragments[[1]]
+    }
+
+    if (!is.null(axis_map[[fragment]])) {
+      next
+    }
+
+    axis_map[[fragment]] <- list(
+      xref = axis_ref_from_name(trace$xaxis %||% "xaxis", "x"),
+      yref = axis_ref_from_name(trace$yaxis %||% "yaxis", "y"),
+      xaxis = trace$xaxis %||% "xaxis",
+      yaxis = trace$yaxis %||% "yaxis"
+    )
+
+    remaining_fragments <- remaining_fragments[remaining_fragments != fragment]
+
+    if (length(axis_map) == length(fragments)) {
+      break
+    }
+  }
+
+  if (length(axis_map) < length(fragments) && length(remaining_fragments) > 0) {
+    leftover_traces <- Filter(
+      function(trace) {
+        trace_type <- trace$type %||% ""
+        trace_type %in% valid_types
+      },
+      plotly_traces
+    )
+
+    unused_traces <- Filter(
+      function(trace) {
+        !any(vapply(axis_map, function(entry) {
+          identical(entry$xaxis, trace$xaxis %||% "xaxis") &&
+            identical(entry$yaxis, trace$yaxis %||% "yaxis")
+        }, logical(1)))
+      },
+      leftover_traces
+    )
+
+    for (fragment in remaining_fragments) {
+      if (length(unused_traces) == 0) {
+        break
+      }
+
+      trace <- unused_traces[[1]]
+      axis_map[[fragment]] <- list(
+        xref = axis_ref_from_name(trace$xaxis %||% "xaxis", "x"),
+        yref = axis_ref_from_name(trace$yaxis %||% "yaxis", "y"),
+        xaxis = trace$xaxis %||% "xaxis",
+        yaxis = trace$yaxis %||% "yaxis"
+      )
+
+      unused_traces <- unused_traces[-1]
+    }
+  }
+
+  axis_map
+}
+
+build_vertical_shapes <- function(nce_value, fragments, fragment_ranges, fragment_values, axis_map) {
+  shapes <- lapply(fragments, function(fragment) {
+    axes <- axis_map[[fragment]]
+    range_vals <- fragment_ranges[[fragment]]
+    target_value <- fragment_values[[fragment]]
+
+    if (is.null(axes) || is.null(range_vals) || length(range_vals) < 2 || any(!is.finite(range_vals))) {
+      return(NULL)
+    }
+
+    list(
+      type = "line",
+      x0 = nce_value,
+      x1 = nce_value,
+      xref = axes$xref,
+      y0 = range_vals[1],
+      y1 = range_vals[2],
+      yref = axes$yref,
+      line = list(color = "#7a7a7a", dash = "dash", width = 1)
+    )
+  })
+
+  Filter(Negate(is.null), shapes)
+}
+
+build_fragment_point_traces <- function(nce_value, fragments, fragment_values, axis_map) {
+  traces <- lapply(fragments, function(fragment) {
+    axes <- axis_map[[fragment]]
+    target_value <- fragment_values[[fragment]]
+
+    if (is.null(axes) || is.na(target_value)) {
+      return(NULL)
+    }
+
+    list(
+      x = c(nce_value),
+      y = c(target_value),
+      type = "scatter",
+      mode = "markers",
+      marker = list(color = "#ab1f25", size = 6),
+      hoverinfo = "x+y",
+      showlegend = FALSE,
+      xaxis = axes$xaxis,
+      yaxis = axes$yaxis
+    )
+  })
+
+  names(traces) <- fragments
+  Filter(Negate(is.null), traces)
 }
 
 ui <- fluidPage(
@@ -179,6 +404,19 @@ ui <- fluidPage(
         max = 7,
         value = 2,
         step = 1
+      ),
+      sliderInput(
+        inputId = "nce",
+        label = "Normalized collision energy (NCE)",
+        min = 20,
+        max = 40,
+        value = 30,
+        step = 0.5
+      ),
+      div(
+        class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
+        actionButton("nce_decrement", "-0.5 NCE"),
+        actionButton("nce_increment", "+0.5 NCE")
       ),
       actionButton(
         inputId = "submit",
@@ -227,21 +465,33 @@ server <- function(input, output, session) {
     }
   })
 
-  output$fragment_plot <- renderPlotly({
+  curve_data <- reactive({
     preds <- predictions()
     req(preds)
 
     if (identical(preds$status, "error")) {
+      return(data.frame())
+    }
+
+    evaluate_fragment_curves(preds$data)
+  })
+
+  output$fragment_plot <- renderPlotly({
+    curve_data_df <- curve_data()
+
+    if (nrow(curve_data_df) == 0) {
+      session$userData$fragment_axis_map <- NULL
+      session$userData$fragment_point_traces <- NULL
+      session$userData$fragment_order <- NULL
       return(NULL)
     }
 
-    curve_data <- evaluate_fragment_curves(preds$data)
+    fragments <- levels(curve_data_df$Fragment)
+    fragment_ranges <- fragment_intensity_ranges(curve_data_df)
+    initial_nce <- isolate(if (!is.null(input$nce)) input$nce else 30)
+    fragment_values <- fragment_intensity_at_nce(curve_data_df, initial_nce)
 
-    if (nrow(curve_data) == 0) {
-      return(NULL)
-    }
-
-    plot <- ggplot(curve_data, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
+    plot <- ggplot(curve_data_df, aes(x = Position, y = Intensity, text = paste("Fragment:", Fragment))) +
       geom_line(color = "#3a80b9") +
       facet_wrap(~Fragment, scales = "free_y", nrow = 4, ncol = 6) +
       scale_x_continuous(breaks = c(20, 30, 40)) +
@@ -263,8 +513,90 @@ server <- function(input, output, session) {
         strip.text = element_text(face = "bold")
       )
 
-    ggplotly(plot, tooltip = c("x", "y", "text"))
+    built_plot <- ggplotly(plot, tooltip = c("x", "y", "text")) |>
+      plotly_build()
+
+    axis_map <- extract_fragment_axis_map(built_plot$x$data, fragments)
+    shapes <- build_vertical_shapes(initial_nce, fragments, fragment_ranges, fragment_values, axis_map)
+    built_plot$x$layout$shapes <- shapes
+
+    point_traces <- build_fragment_point_traces(initial_nce, fragments, fragment_values, axis_map)
+    existing_traces <- length(built_plot$x$data)
+    built_plot$x$data <- c(built_plot$x$data, point_traces)
+
+    if (length(point_traces) > 0) {
+      point_indexes <- existing_traces + seq_along(point_traces) - 1
+      names(point_indexes) <- names(point_traces)
+      session$userData$fragment_point_traces <- point_indexes
+    } else {
+      session$userData$fragment_point_traces <- NULL
+    }
+
+    session$userData$fragment_axis_map <- axis_map
+    session$userData$fragment_order <- fragments
+
+    built_plot
   })
+
+  observeEvent(input$nce_increment, {
+    current <- isolate(input$nce)
+    new_value <- min(40, ifelse(is.null(current), 30, current + 0.5))
+    updateSliderInput(session, "nce", value = new_value)
+  })
+
+  observeEvent(input$nce_decrement, {
+    current <- isolate(input$nce)
+    new_value <- max(20, ifelse(is.null(current), 30, current - 0.5))
+    updateSliderInput(session, "nce", value = new_value)
+  })
+
+  observeEvent({
+    list(input$nce, curve_data())
+  }, {
+    curve_data_df <- curve_data()
+
+    if (nrow(curve_data_df) == 0) {
+      return(NULL)
+    }
+
+    fragments <- levels(curve_data_df$Fragment)
+    fragment_ranges <- fragment_intensity_ranges(curve_data_df)
+    fragment_values <- fragment_intensity_at_nce(curve_data_df, input$nce)
+    axis_map <- session$userData$fragment_axis_map %||% list()
+
+    proxy <- plotlyProxy("fragment_plot", session)
+    proxy <- plotlyProxyInvoke(
+      proxy,
+      "relayout",
+      list(shapes = build_vertical_shapes(input$nce, fragments, fragment_ranges, fragment_values, axis_map))
+    )
+
+    point_indexes <- session$userData$fragment_point_traces
+    if (!is.null(point_indexes) && length(point_indexes) > 0) {
+      tracked_fragments <- intersect(fragments, names(point_indexes))
+      tracked_fragments <- tracked_fragments[!is.na(fragment_values[tracked_fragments])]
+
+      if (length(tracked_fragments) > 0) {
+        trace_indices <- as.list(unname(unlist(point_indexes[tracked_fragments])))
+
+        if (length(trace_indices) > 0) {
+          x_updates <- lapply(tracked_fragments, function(fragment) list(input$nce))
+          y_updates <- lapply(tracked_fragments, function(fragment) list(fragment_values[[fragment]]))
+
+          proxy <- plotlyProxyInvoke(
+            proxy,
+            "restyle",
+            list(
+              x = x_updates,
+              y = y_updates,
+              marker = list(color = "#ab1f25", size = 6)
+            ),
+            trace_indices
+          )
+        }
+      }
+    }
+  }, ignoreNULL = FALSE)
 }
 
 shinyApp(ui = ui, server = server)
