@@ -105,6 +105,23 @@ resolve_output <- function(output_map, candidates) {
   NULL
 }
 
+expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
+  coeffs_per_fragment <- ncol(coeff_matrix)
+  total_coeffs <- length(knots) - degree - 1
+  padding <- total_coeffs - coeffs_per_fragment
+
+  if (padding < 0 || padding %% 2 != 0) {
+    stop("Unable to align fragment coefficients with knot vector")
+  }
+
+  pad_each_side <- padding / 2
+
+  left_pad <- if (pad_each_side > 0) matrix(0, nrow = nrow(coeff_matrix), ncol = pad_each_side) else NULL
+  right_pad <- if (pad_each_side > 0) matrix(0, nrow = nrow(coeff_matrix), ncol = pad_each_side) else NULL
+
+  cbind(left_pad, coeff_matrix, right_pad)
+}
+
 evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200, max_fragments = 24) {
   fragments <- predictions$fragments
   coeff_matrix <- predictions$coefficients
@@ -131,37 +148,26 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
 
   x_vals <- seq(x_start, x_end, length.out = points)
   basis <- splines::splineDesign(knots = knots, x = x_vals, ord = degree + 1, outer.ok = TRUE)
-  total_coeffs <- ncol(basis)
-  coeffs_per_fragment <- ncol(coeff_matrix)
-  padding <- total_coeffs - coeffs_per_fragment
+  full_coeffs <- expand_fragment_coefficients(coeff_matrix, knots, degree)
+  value_matrix <- basis %*% t(full_coeffs)
 
-  if (padding < 0 || padding %% 2 != 0) {
-    stop("Unable to align fragment coefficients with knot vector")
-  }
-
-  pad_each_side <- padding / 2
-
-  curve_dfs <- lapply(seq_along(fragments), function(idx) {
-    fragment_coeffs <- coeff_matrix[idx, ]
-    full_coeffs <- c(rep(0, pad_each_side), fragment_coeffs, rep(0, pad_each_side))
-    values <- as.numeric(basis %*% full_coeffs)
-
-    data.frame(
-      Fragment = fragments[[idx]],
-      Position = x_vals,
-      Intensity = values,
-      stringsAsFactors = FALSE
-    )
-  })
-
-  curve_data <- do.call(rbind, curve_dfs)
+  curve_data <- data.frame(
+    Fragment = factor(rep(fragments, each = length(x_vals)), levels = fragments),
+    Position = rep(x_vals, times = length(fragments)),
+    Intensity = as.vector(value_matrix),
+    stringsAsFactors = FALSE
+  )
 
   if (nrow(curve_data) == 0) {
     return(curve_data)
   }
 
-  ordered_facets <- unique(fragments)
-  curve_data$Fragment <- factor(curve_data$Fragment, levels = ordered_facets)
+  attr(curve_data, "fragment_metadata") <- list(
+    fragments = fragments,
+    coefficients = coeff_matrix,
+    knots = knots,
+    degree = degree
+  )
 
   curve_data
 }
@@ -193,17 +199,25 @@ fragment_intensity_at_nce <- function(curve_df, nce_value) {
     return(numeric())
   }
 
-  fragments <- levels(curve_df$Fragment)
+  metadata <- attr(curve_df, "fragment_metadata")
 
-  values <- vapply(fragments, function(fragment) {
-    subset_df <- curve_df[curve_df$Fragment == fragment, c("Position", "Intensity"), drop = FALSE]
+  if (is.null(metadata)) {
+    return(numeric())
+  }
 
-    if (nrow(subset_df) == 0) {
-      return(NA_real_)
-    }
+  fragments <- metadata$fragments
+  coeff_matrix <- metadata$coefficients
+  knots <- metadata$knots
+  degree <- metadata$degree %||% 3
 
-    approx(subset_df$Position, subset_df$Intensity, xout = nce_value, rule = 2)$y
-  }, numeric(1))
+  if (is.null(fragments) || length(fragments) == 0 || nrow(coeff_matrix) == 0) {
+    return(numeric())
+  }
+
+  full_coeffs <- expand_fragment_coefficients(coeff_matrix, knots, degree)
+  basis <- splines::splineDesign(knots = knots, x = nce_value, ord = degree + 1, outer.ok = TRUE)
+  basis_vec <- as.numeric(basis)
+  values <- as.numeric(full_coeffs %*% basis_vec)
 
   setNames(values, fragments)
 }
