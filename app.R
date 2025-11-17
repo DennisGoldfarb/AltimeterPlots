@@ -612,61 +612,99 @@ build_isotope_segment_vectors <- function(peaks) {
   list(x = x, y = y)
 }
 
-build_stem_segment_vectors <- function(x_values, heights) {
-  if (length(x_values) == 0 || length(heights) == 0) {
-    return(list(x = numeric(0), y = numeric(0)))
+normalize_intensity_matrix <- function(intensity_matrix) {
+  if (is.null(intensity_matrix) || !is.matrix(intensity_matrix) || nrow(intensity_matrix) == 0) {
+    return(matrix(0, nrow = 0, ncol = 0))
+  }
+
+  normalized <- intensity_matrix
+
+  for (i in seq_len(nrow(intensity_matrix))) {
+    row_values <- as.numeric(intensity_matrix[i, , drop = TRUE])
+    max_val <- suppressWarnings(max(row_values, na.rm = TRUE))
+
+    if (!is.finite(max_val) || max_val <= 0) {
+      normalized[i, ] <- 0
+    } else {
+      normalized[i, ] <- row_values / max_val
+    }
+  }
+
+  normalized[!is.finite(normalized)] <- 0
+  normalized
+}
+
+build_stem_segment_x <- function(x_values) {
+  if (length(x_values) == 0) {
+    return(numeric(0))
+  }
+
+  segment_x <- rep(x_values, each = 3)
+  segment_x[seq(3, length(segment_x), by = 3)] <- NA_real_
+  segment_x
+}
+
+build_stem_segment_y <- function(heights) {
+  if (length(heights) == 0) {
+    return(numeric(0))
   }
 
   heights <- as.numeric(heights)
   heights[!is.finite(heights)] <- 0
 
-  x <- rep(x_values, each = 3)
-  y <- numeric(length(x))
-
-  start_points <- seq(1, length(x), by = 3)
+  segment_y <- numeric(length(heights) * 3)
+  start_points <- seq(1, length(segment_y), by = 3)
   end_points <- start_points + 1
   separators <- start_points + 2
 
-  y[start_points] <- 0
-  y[end_points] <- heights
-  x[separators] <- NA_real_
-  y[separators] <- NA_real_
+  segment_y[start_points] <- 0
+  segment_y[end_points] <- heights
+  segment_y[separators] <- NA_real_
 
-  list(x = x, y = y)
+  segment_y
 }
 
-build_spectrum_plot_components <- function(spectrum_df) {
-  if (nrow(spectrum_df) == 0) {
-    return(list(
-      segments = list(x = numeric(0), y = numeric(0)),
-      text = character(0),
-      title = "Predicted spectrum"
-    ))
+build_stem_segment_vectors <- function(x_values, heights) {
+  if (length(x_values) == 0 || length(heights) == 0) {
+    return(list(x = numeric(0), y = numeric(0)))
   }
 
-  segments <- build_stem_segment_vectors(spectrum_df$MZ, spectrum_df$NormalizedIntensity)
+  list(x = build_stem_segment_x(x_values), y = build_stem_segment_y(heights))
+}
 
-  tooltip_text <- paste0(
-    "Fragment: ", spectrum_df$Fragment,
-    "<br>m/z: ", round(spectrum_df$MZ, 4),
-    "<br>Normalized intensity: ", round(spectrum_df$NormalizedIntensity, 3)
-  )
-
-  text <- rep(NA_character_, length(segments$x))
-
-  if (length(text) > 0) {
-    end_points <- seq(2, length(text), by = 3)
-    text[end_points] <- tooltip_text
+build_spectrum_tooltip_prefix <- function(fragments, mz_values) {
+  if (length(fragments) == 0) {
+    return(character(0))
   }
 
-  nce_value <- spectrum_df$NCE[[1]] %||% 30
-  offset_value <- spectrum_df$IsolationOffset[[1]] %||% 0
-  title_text <- sprintf("Predicted spectrum at %s NCE (offset %+0.3f m/z)", nce_value, offset_value)
+  if (length(mz_values) != length(fragments)) {
+    mz_values <- rep_len(mz_values %||% NA_real_, length(fragments))
+  }
 
+  mz_display <- ifelse(is.finite(mz_values), sprintf("%.4f", mz_values), "NA")
+  paste0("Fragment: ", fragments, "<br>m/z: ", mz_display, "<br>Normalized intensity: ")
+}
+
+build_spectrum_tooltip_vector <- function(prefixes, intensities) {
+  if (length(prefixes) == 0 || length(intensities) == 0) {
+    return(character(0))
+  }
+
+  normalized <- as.numeric(intensities)
+  normalized[!is.finite(normalized)] <- 0
+  formatted <- sprintf("%.3f", normalized)
+  tooltip_text <- paste0(prefixes, formatted)
+
+  text <- rep(NA_character_, length(prefixes) * 3)
+  text_positions <- seq(2, length(text), by = 3)
+  text[text_positions] <- tooltip_text
+  text
+}
+
+build_spectrum_segment_template <- function(fragments, mz_values) {
   list(
-    segments = segments,
-    text = text,
-    title = title_text
+    x = build_stem_segment_x(mz_values),
+    tooltip_prefix = build_spectrum_tooltip_prefix(fragments, mz_values)
   )
 }
 
@@ -845,11 +883,12 @@ server <- function(input, output, session) {
   isolation_center_offset <- reactiveVal(0)
   isolation_center_playing <- reactiveVal(FALSE)
   isolation_center_direction <- reactiveVal(1)
-  isolation_center_timer <- reactiveTimer(1000)
+  isolation_center_timer <- reactiveTimer(100)
   isotope_prediction_table <- reactiveVal(NULL)
   isolation_offset_grid <- generate_isolation_offsets()
   session$userData$spectrum_plot_ready <- FALSE
   session$userData$spectrum_trace_indices <- NULL
+  session$userData$spectrum_segment_x <- NULL
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -892,23 +931,31 @@ server <- function(input, output, session) {
 
     if (is.null(efficiency_matrix) || nrow(efficiency_matrix) == 0) {
       isotope_prediction_table(NULL)
+      session$userData$spectrum_segment_x <- NULL
       return()
     }
 
     nce_value <- input$nce %||% 30
     isotope_prediction_table(NULL)
+    session$userData$spectrum_segment_x <- NULL
 
     tryCatch({
       withProgress(message = "Fetching isolation-aware spectrum", value = 0, {
         result <- fetch_isotope_intensities(input$peptide, input$charge, nce_value, efficiency_matrix)
+        normalized_intensities <- normalize_intensity_matrix(result$intensities)
+        segment_template <- build_spectrum_segment_template(result$fragments, result$mz)
+
         isotope_prediction_table(list(
           fragments = result$fragments,
           mz = result$mz,
           offsets = offsets,
           intensities = result$intensities,
+          normalized_intensities = normalized_intensities,
           efficiencies = efficiency_matrix,
-          nce = nce_value
+          nce = nce_value,
+          segment_template = segment_template
         ))
+        session$userData$spectrum_segment_x <- NULL
       })
     }, error = function(e) {
       showNotification(
@@ -917,6 +964,7 @@ server <- function(input, output, session) {
         duration = 5
       )
       isotope_prediction_table(NULL)
+      session$userData$spectrum_segment_x <- NULL
     })
   }, ignoreNULL = TRUE)
 
@@ -1036,54 +1084,6 @@ server <- function(input, output, session) {
     )
   }, ignoreNULL = FALSE)
 
-  spectrum_data <- reactive({
-    isolation_predictions <- isotope_prediction_table()
-
-    if (is.null(isolation_predictions) || is.null(isolation_predictions$intensities)) {
-      return(data.frame())
-    }
-
-    offsets <- isolation_predictions$offsets
-    current_offset <- isolation_center_offset() %||% 0
-    idx <- closest_offset_index(offsets, current_offset)
-
-    if (is.na(idx)) {
-      return(data.frame())
-    }
-
-    fragments <- isolation_predictions$fragments
-    mz_values <- isolation_predictions$mz %||% rep(NA_real_, length(fragments))
-    intensity_matrix <- isolation_predictions$intensities
-
-    if (is.null(intensity_matrix) || nrow(intensity_matrix) < idx) {
-      return(data.frame())
-    }
-
-    raw_intensities <- as.numeric(intensity_matrix[idx, , drop = TRUE])
-
-    if (length(raw_intensities) == 0) {
-      return(data.frame())
-    }
-
-    max_intensity <- suppressWarnings(max(raw_intensities, na.rm = TRUE))
-
-    if (!is.finite(max_intensity) || max_intensity <= 0) {
-      normalized <- rep(0, length(raw_intensities))
-    } else {
-      normalized <- raw_intensities / max_intensity
-    }
-
-    data.frame(
-      Fragment = fragments,
-      MZ = mz_values,
-      RawIntensity = raw_intensities,
-      NormalizedIntensity = normalized,
-      NCE = isolation_predictions$nce %||% input$nce %||% 30,
-      IsolationOffset = offsets[[idx]],
-      stringsAsFactors = FALSE
-    )
-  })
-
   output$fragment_plot <- renderPlotly({
     curve_data_df <- curve_data()
 
@@ -1178,18 +1178,21 @@ server <- function(input, output, session) {
     plot
   })
 
-  observeEvent(spectrum_data(), {
+  observeEvent({
+    list(isotope_prediction_table(), isolation_center_offset())
+  }, {
     traces <- session$userData$spectrum_trace_indices
 
     if (is.null(traces) || is.null(traces$peaks) || !isTRUE(session$userData$spectrum_plot_ready)) {
       return()
     }
 
-    spectrum_df <- spectrum_data()
     proxy <- plotlyProxy("spectrum_plot", session)
+    predictions <- isotope_prediction_table()
 
-    if (nrow(spectrum_df) == 0) {
-      proxy <- plotlyProxyInvoke(
+    if (is.null(predictions) || is.null(predictions$offsets) || is.null(predictions$normalized_intensities)) {
+      session$userData$spectrum_segment_x <- NULL
+      plotlyProxyInvoke(
         proxy,
         "restyle",
         list(
@@ -1200,36 +1203,78 @@ server <- function(input, output, session) {
         list(traces$peaks)
       )
 
-      plotlyProxyInvoke(
-        proxy,
-        "relayout",
-        list(title = list(text = "Predicted spectrum"))
-      )
-
+      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = "Predicted spectrum")))
       return()
     }
 
-    components <- build_spectrum_plot_components(spectrum_df)
+    offsets <- predictions$offsets
+    idx <- closest_offset_index(offsets, isolation_center_offset() %||% 0)
 
-    proxy <- plotlyProxyInvoke(
+    normalized_matrix <- predictions$normalized_intensities
+
+    if (is.na(idx) || idx > nrow(normalized_matrix)) {
+      plotlyProxyInvoke(
+        proxy,
+        "restyle",
+        list(
+          y = wrap_restyle_vector(NA_real_),
+          text = wrap_restyle_vector(NA_character_)
+        ),
+        list(traces$peaks)
+      )
+      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = "Predicted spectrum")))
+      return()
+    }
+
+    normalized_row <- as.numeric(normalized_matrix[idx, , drop = TRUE])
+
+    if (length(normalized_row) == 0) {
+      plotlyProxyInvoke(
+        proxy,
+        "restyle",
+        list(
+          y = wrap_restyle_vector(NA_real_),
+          text = wrap_restyle_vector(NA_character_)
+        ),
+        list(traces$peaks)
+      )
+      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = "Predicted spectrum")))
+      return()
+    }
+
+    segment_template <- predictions$segment_template %||%
+      build_spectrum_segment_template(predictions$fragments, predictions$mz)
+
+    y_values <- build_stem_segment_y(normalized_row)
+    text_values <- build_spectrum_tooltip_vector(segment_template$tooltip_prefix, normalized_row)
+
+    restyle_payload <- list(
+      y = wrap_restyle_vector(y_values),
+      text = wrap_restyle_vector(text_values)
+    )
+
+    if (is.null(session$userData$spectrum_segment_x)) {
+      restyle_payload$x <- wrap_restyle_vector(segment_template$x)
+      session$userData$spectrum_segment_x <- segment_template$x
+    }
+
+    plotlyProxyInvoke(
       proxy,
       "restyle",
-      list(
-        x = wrap_restyle_vector(components$segments$x),
-        y = wrap_restyle_vector(components$segments$y),
-        text = wrap_restyle_vector(components$text)
-      ),
+      restyle_payload,
       list(traces$peaks)
+    )
+
+    title_text <- sprintf(
+      "Predicted spectrum at %s NCE (offset %+0.3f m/z)",
+      predictions$nce %||% input$nce %||% 30,
+      offsets[[idx]] %||% 0
     )
 
     plotlyProxyInvoke(
       proxy,
       "relayout",
-      list(
-        title = list(text = components$title),
-        xaxis = list(title = "m/z"),
-        yaxis = list(title = "Normalized intensity", range = c(0, 1.05))
-      )
+      list(title = list(text = title_text))
     )
   }, ignoreNULL = FALSE)
 
