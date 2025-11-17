@@ -559,7 +559,7 @@ server <- function(input, output, session) {
   isolation_center_offset <- reactiveVal(0)
   isolation_center_playing <- reactiveVal(FALSE)
   isolation_center_direction <- reactiveVal(1)
-  isolation_center_timer <- reactiveTimer(200)
+  isolation_center_timer <- reactiveTimer(1000)
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
