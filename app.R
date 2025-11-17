@@ -975,6 +975,56 @@ is_isotope_annotation <- function(annotations) {
   mask
 }
 
+compute_isotope_intensity_share <- function(intensities, isotope_mask) {
+  if (length(intensities) == 0 || length(isotope_mask) == 0) {
+    return(NA_real_)
+  }
+
+  if (length(intensities) != length(isotope_mask)) {
+    return(NA_real_)
+  }
+
+  values <- as.numeric(intensities)
+  values[!is.finite(values)] <- 0
+
+  total <- sum(values)
+
+  if (!is.finite(total) || total <= 0) {
+    return(0)
+  }
+
+  isotope_total <- sum(values[isotope_mask])
+
+  if (!is.finite(isotope_total) || isotope_total < 0) {
+    isotope_total <- 0
+  }
+
+  max(0, min(isotope_total / total, 1))
+}
+
+format_isotope_contribution_text <- function(share) {
+  if (!is.finite(share)) {
+    return("Isotope contribution: --% of total intensity")
+  }
+
+  share <- max(0, min(share, 1))
+  sprintf("Isotope contribution: %0.1f%% of total intensity", share * 100)
+}
+
+build_spectrum_isotope_annotation <- function(text) {
+  list(
+    text = text %||% "",
+    xref = "paper",
+    yref = "paper",
+    x = 0,
+    y = 1.08,
+    showarrow = FALSE,
+    xanchor = "left",
+    align = "left",
+    font = list(size = 12, color = "#ff7f0e")
+  )
+}
+
 build_isotope_plot_components <- function(profile, width, center_offset) {
   distribution <- profile$distribution
   monoisotopic_mz <- profile$monoisotopic_mz
@@ -1467,7 +1517,10 @@ server <- function(input, output, session) {
       yaxis = list(title = "Normalized intensity", range = c(0, 1.05)),
       hovermode = "x",
       showlegend = FALSE,
-      margin = list(t = 40)
+      annotations = list(
+        build_spectrum_isotope_annotation(format_isotope_contribution_text(NA_real_))
+      ),
+      margin = list(t = 70)
     )
 
     session$userData$spectrum_trace_indices <- list(peaks = 0, isotopes = 1)
@@ -1515,7 +1568,14 @@ server <- function(input, output, session) {
         )
       }
 
-      plotlyProxyInvoke(proxy, "relayout", list(title = list(text = message)))
+      layout_update <- list(
+        title = list(text = message),
+        annotations = list(
+          build_spectrum_isotope_annotation(format_isotope_contribution_text(NA_real_))
+        )
+      )
+
+      plotlyProxyInvoke(proxy, "relayout", layout_update)
     }
 
     if (is.null(predictions) || is.null(predictions$offsets) || is.null(predictions$normalized_intensities)) {
@@ -1549,6 +1609,17 @@ server <- function(input, output, session) {
     }
     isotope_template <- predictions$isotope_segment_template %||%
       build_spectrum_segment_template(predictions$fragments[isotope_mask], predictions$mz[isotope_mask])
+
+    raw_intensity_matrix <- predictions$intensities
+    raw_intensities <- NULL
+
+    if (!is.null(raw_intensity_matrix) && is.matrix(raw_intensity_matrix) &&
+        nrow(raw_intensity_matrix) >= idx) {
+      raw_intensities <- as.numeric(raw_intensity_matrix[idx, , drop = TRUE])
+    }
+
+    isotope_share <- compute_isotope_intensity_share(raw_intensities %||% normalized_row, isotope_mask)
+    isotope_annotation <- format_isotope_contribution_text(isotope_share)
 
     segment_cache <- session$userData$spectrum_segment_x
 
@@ -1614,11 +1685,12 @@ server <- function(input, output, session) {
       offsets[[idx]] %||% 0
     )
 
-    plotlyProxyInvoke(
-      proxy,
-      "relayout",
-      list(title = list(text = title_text))
+    layout_update <- list(
+      title = list(text = title_text),
+      annotations = list(build_spectrum_isotope_annotation(isotope_annotation))
     )
+
+    plotlyProxyInvoke(proxy, "relayout", layout_update)
   }, ignoreNULL = FALSE)
 
   observeEvent(input$nce_increment, {
