@@ -114,6 +114,15 @@ resolve_output_data <- function(output_map, candidates) {
   NULL
 }
 
+resolve_output_entry <- function(output_map, candidates) {
+  for (name in candidates) {
+    if (name %in% names(output_map)) {
+      return(output_map[[name]])
+    }
+  }
+  NULL
+}
+
 
 compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_relative = 1e-3) {
   stopifnot(is.character(sequence), length(sequence) == 1)
@@ -206,7 +215,7 @@ closest_offset_index <- function(offsets, target, tolerance = 1e-6) {
   idx
 }
 
-fetch_isotope_intensities <- function(sequence, charge, nce, efficiency_matrix) {
+fetch_isotope_intensities <- function(sequence, charge, nce, efficiency_matrix, reference_fragments = NULL, reference_mz = NULL) {
   stopifnot(is.character(sequence), length(sequence) == 1)
   stopifnot(is.numeric(charge), length(charge) == 1)
 
@@ -259,7 +268,36 @@ fetch_isotope_intensities <- function(sequence, charge, nce, efficiency_matrix) 
 
   parsed <- httr::content(response)
   predictions <- parse_isotope_prediction_outputs(parsed$outputs, num_requests)
-  filter_isotope_predictions(predictions, min_isotope_probability)
+  aligned <- align_isotope_prediction_outputs(predictions, reference_fragments, reference_mz)
+  filter_isotope_predictions(aligned, min_isotope_probability)
+}
+
+infer_fragments_per_request <- function(entry, total_values, num_requests) {
+  if (!is.null(entry) && !is.null(entry$shape) && length(entry$shape) >= 2) {
+    shape <- as.numeric(entry$shape)
+    if (length(shape) >= 2 && shape[1] == num_requests) {
+      fragments_per_request <- prod(shape[-1])
+      if (is.finite(fragments_per_request) && fragments_per_request > 0) {
+        return(as.integer(fragments_per_request))
+      }
+    }
+  }
+
+  value_length <- length(total_values)
+
+  if (value_length %% num_requests != 0) {
+    stop("Unable to determine fragment counts for Koina isotope response")
+  }
+
+  as.integer(value_length / num_requests)
+}
+
+reshape_output_matrix <- function(values, num_requests, fragments_per_request) {
+  if (length(values) == 0) {
+    matrix(NA, nrow = num_requests, ncol = fragments_per_request)
+  } else {
+    matrix(values, nrow = num_requests, byrow = TRUE)
+  }
 }
 
 parse_isotope_prediction_outputs <- function(outputs, num_requests) {
@@ -269,30 +307,56 @@ parse_isotope_prediction_outputs <- function(outputs, num_requests) {
 
   output_map <- create_output_entry_map(outputs)
 
-  fragments <- unlist(resolve_output_data(output_map, c("annotations", "fragments")))
-  mzs <- as.numeric(unlist(resolve_output_data(output_map, c("mz", "mzs"))))
-  intensity_data <- resolve_output_data(output_map, c("intensities", "intensity", "predictions"))
+  fragment_entry <- resolve_output_entry(output_map, c("annotations", "fragments"))
+  intensity_entry <- resolve_output_entry(output_map, c("intensities", "intensity", "predictions"))
+  mz_entry <- resolve_output_entry(output_map, c("mz", "mzs"))
 
-  if (is.null(fragments) || length(fragments) == 0) {
+  if (is.null(fragment_entry) || is.null(fragment_entry$data)) {
     stop("Koina isotope response missing fragment annotations")
   }
 
-  if (is.null(intensity_data)) {
+  if (is.null(intensity_entry) || is.null(intensity_entry$data)) {
     stop("Koina isotope response missing intensity predictions")
   }
 
-  intensities <- as.numeric(unlist(intensity_data))
-  num_fragments <- length(fragments)
+  fragment_values <- unlist(fragment_entry$data)
+  fragments_per_request <- infer_fragments_per_request(fragment_entry, fragment_values, num_requests)
 
-  if (length(intensities) == 0 || (num_requests * num_fragments) != length(intensities)) {
+  if (!is.finite(fragments_per_request) || fragments_per_request <= 0) {
+    stop("Koina isotope response did not include any fragments")
+  }
+
+  if (length(fragment_values) != num_requests * fragments_per_request) {
+    stop("Koina isotope response has inconsistent fragment counts")
+  }
+
+  fragment_matrix <- reshape_output_matrix(fragment_values, num_requests, fragments_per_request)
+
+  intensity_values <- as.numeric(unlist(intensity_entry$data))
+
+  if (length(intensity_values) != num_requests * fragments_per_request) {
     stop("Koina isotope response has unexpected number of intensities")
   }
 
-  intensity_matrix <- matrix(intensities, nrow = num_requests, byrow = TRUE)
+  intensity_matrix <- reshape_output_matrix(intensity_values, num_requests, fragments_per_request)
+
+  mz_matrix <- NULL
+
+  if (!is.null(mz_entry) && !is.null(mz_entry$data)) {
+    mz_values <- as.numeric(unlist(mz_entry$data))
+
+    if (length(mz_values) == fragments_per_request) {
+      mz_values <- rep(mz_values, each = num_requests)
+    }
+
+    if (length(mz_values) == num_requests * fragments_per_request) {
+      mz_matrix <- reshape_output_matrix(mz_values, num_requests, fragments_per_request)
+    }
+  }
 
   list(
-    fragments = fragments,
-    mz = mzs,
+    fragments = fragment_matrix,
+    mz = mz_matrix,
     intensities = intensity_matrix
   )
 }
@@ -341,10 +405,141 @@ filter_isotope_predictions <- function(predictions, min_probability = 0.01) {
   }
 
   if (!is.null(predictions$mz)) {
-    predictions$mz <- predictions$mz[keep_mask]
+    mz_values <- as.numeric(predictions$mz)
+    if (length(mz_values) != column_count) {
+      mz_values <- rep_len(mz_values, column_count)
+    }
+    predictions$mz <- mz_values[keep_mask]
   }
 
   predictions
+}
+
+unique_fragments_with_mz <- function(fragments, mz_values = NULL) {
+  if (length(fragments) == 0) {
+    return(list(fragments = character(0), mz = numeric(0)))
+  }
+
+  unique_fragments <- character(0)
+  unique_mz <- numeric(0)
+
+  for (i in seq_along(fragments)) {
+    fragment <- as.character(fragments[[i]])
+
+    if (!nzchar(fragment) || is.na(fragment)) {
+      next
+    }
+
+    if (fragment %in% unique_fragments) {
+      next
+    }
+
+    unique_fragments <- c(unique_fragments, fragment)
+    mz_value <- if (!is.null(mz_values) && length(mz_values) >= i) as.numeric(mz_values[[i]]) else NA_real_
+    unique_mz <- c(unique_mz, mz_value)
+  }
+
+  list(fragments = unique_fragments, mz = unique_mz)
+}
+
+lookup_fragment_mz <- function(fragment, fragment_matrix, mz_matrix) {
+  if (is.null(mz_matrix) || !is.matrix(mz_matrix)) {
+    return(NA_real_)
+  }
+
+  matches <- fragment_matrix == fragment
+
+  if (!any(matches, na.rm = TRUE)) {
+    return(NA_real_)
+  }
+
+  mz_values <- mz_matrix[matches]
+  mz_values <- mz_values[is.finite(mz_values)]
+
+  if (length(mz_values) == 0) {
+    return(NA_real_)
+  }
+
+  mz_values[[1]]
+}
+
+align_isotope_prediction_outputs <- function(predictions, reference_fragments = NULL, reference_mz = NULL) {
+  fragment_matrix <- predictions$fragments
+  intensity_matrix <- predictions$intensities
+  mz_matrix <- predictions$mz
+
+  row_count <- if (!is.null(intensity_matrix) && is.matrix(intensity_matrix)) nrow(intensity_matrix) else 0
+
+  if (is.null(fragment_matrix) || !is.matrix(fragment_matrix) || nrow(fragment_matrix) == 0) {
+    reference_unique <- unique_fragments_with_mz(reference_fragments %||% character(0), reference_mz)
+    return(list(
+      fragments = reference_unique$fragments,
+      mz = reference_unique$mz,
+      intensities = matrix(0, nrow = row_count, ncol = length(reference_unique$fragments))
+    ))
+  }
+
+  reference <- unique_fragments_with_mz(reference_fragments %||% character(0), reference_mz)
+  canonical_fragments <- reference$fragments
+  canonical_mz <- reference$mz
+
+  observed <- as.character(fragment_matrix)
+  observed <- observed[!is.na(observed) & nzchar(observed)]
+  observed <- unique(observed)
+
+  extras <- observed[!(observed %in% canonical_fragments)]
+
+  if (length(extras) > 0) {
+    extra_mz <- vapply(
+      extras,
+      function(fragment) lookup_fragment_mz(fragment, fragment_matrix, mz_matrix),
+      numeric(1)
+    )
+    canonical_fragments <- c(canonical_fragments, extras)
+    canonical_mz <- c(canonical_mz, extra_mz)
+  }
+
+  column_count <- length(canonical_fragments)
+
+  if (column_count == 0 || row_count == 0) {
+    return(list(
+      fragments = canonical_fragments,
+      mz = canonical_mz,
+      intensities = matrix(0, nrow = row_count, ncol = column_count)
+    ))
+  }
+
+  aligned_matrix <- matrix(0, nrow = row_count, ncol = column_count)
+
+  for (i in seq_len(row_count)) {
+    row_fragments <- as.character(fragment_matrix[i, , drop = TRUE])
+    row_intensities <- as.numeric(intensity_matrix[i, , drop = TRUE])
+    valid <- !is.na(row_fragments) & nzchar(row_fragments)
+
+    if (!any(valid)) {
+      next
+    }
+
+    matches <- match(row_fragments[valid], canonical_fragments)
+    valid_matches <- !is.na(matches)
+
+    if (!any(valid_matches)) {
+      next
+    }
+
+    target_indices <- matches[valid_matches]
+    target_values <- row_intensities[valid][valid_matches]
+
+    aggregated <- tapply(target_values, target_indices, sum)
+    idx <- as.integer(names(aggregated))
+    aligned_matrix[i, idx] <- as.numeric(aggregated)
+  }
+
+  list(
+    fragments = canonical_fragments,
+    mz = canonical_mz,
+    intensities = aligned_matrix
+  )
 }
 
 expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
@@ -1011,9 +1206,25 @@ server <- function(input, output, session) {
     isotope_prediction_table(NULL)
     session$userData$spectrum_segment_x <- NULL
 
+    pred_values <- predictions()
+    reference_fragments <- NULL
+    reference_mz <- NULL
+
+    if (!is.null(pred_values) && identical(pred_values$status, "success") && !is.null(pred_values$data)) {
+      reference_fragments <- pred_values$data$fragments
+      reference_mz <- pred_values$data$mz
+    }
+
     tryCatch({
       withProgress(message = "Fetching isolation-aware spectrum", value = 0, {
-        result <- fetch_isotope_intensities(input$peptide, input$charge, nce_value, efficiency_matrix)
+        result <- fetch_isotope_intensities(
+          input$peptide,
+          input$charge,
+          nce_value,
+          efficiency_matrix,
+          reference_fragments = reference_fragments,
+          reference_mz = reference_mz
+        )
         normalized_intensities <- normalize_intensity_matrix(result$intensities)
         isotope_mask <- is_isotope_annotation(result$fragments)
         segment_template <- build_spectrum_segment_template(result$fragments, result$mz)
