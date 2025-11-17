@@ -460,12 +460,17 @@ ui <- fluidPage(
         min = 20,
         max = 40,
         value = 30,
-        step = 0.5
+        step = 0.1
       ),
       div(
         class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
-        actionButton("nce_decrement", "-0.5 NCE"),
-        actionButton("nce_increment", "+0.5 NCE")
+        actionButton("nce_decrement", "-0.1 NCE"),
+        actionButton("nce_increment", "+0.1 NCE")
+      ),
+      div(
+        class = "d-flex gap-2 mt-2",
+        actionButton("nce_play", "Play"),
+        actionButton("nce_stop", "Stop")
       ),
       actionButton(
         inputId = "submit",
@@ -488,6 +493,10 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
+  nce_playing <- reactiveVal(FALSE)
+  nce_direction <- reactiveVal(1)
+  nce_timer <- reactiveTimer(200)
+
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
 
@@ -640,14 +649,49 @@ server <- function(input, output, session) {
 
   observeEvent(input$nce_increment, {
     current <- isolate(input$nce)
-    new_value <- min(40, ifelse(is.null(current), 30, current + 0.5))
+    new_value <- min(40, ifelse(is.null(current), 30, current + 0.1))
     updateSliderInput(session, "nce", value = new_value)
   })
 
   observeEvent(input$nce_decrement, {
     current <- isolate(input$nce)
-    new_value <- max(20, ifelse(is.null(current), 30, current - 0.5))
+    new_value <- max(20, ifelse(is.null(current), 30, current - 0.1))
     updateSliderInput(session, "nce", value = new_value)
+  })
+
+  observeEvent(input$nce_play, {
+    nce_playing(TRUE)
+  })
+
+  observeEvent(input$nce_stop, {
+    nce_playing(FALSE)
+  })
+
+  observe({
+    nce_timer()
+
+    if (!isTRUE(nce_playing())) {
+      return()
+    }
+
+    current <- isolate(input$nce %||% 30)
+    direction <- nce_direction()
+    step <- 0.1
+    upper <- 40
+    lower <- 20
+
+    next_value <- current + (step * direction)
+
+    if (next_value >= upper) {
+      next_value <- upper
+      direction <- -1
+    } else if (next_value <= lower) {
+      next_value <- lower
+      direction <- 1
+    }
+
+    nce_direction(direction)
+    updateSliderInput(session, "nce", value = next_value)
   })
 
   observeEvent({
