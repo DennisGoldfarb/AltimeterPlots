@@ -375,7 +375,7 @@ build_fragment_point_traces <- function(nce_value, fragments, fragment_values, a
       y = c(target_value),
       type = "scatter",
       mode = "markers",
-      marker = list(color = "#7a7a7a", size = 6),
+      marker = list(color = "#ab1f25", size = 12),
       hoverinfo = "x+y",
       showlegend = FALSE,
       xaxis = axes$xaxis,
@@ -576,20 +576,25 @@ server <- function(input, output, session) {
       tracked_fragments <- intersect(fragments, names(point_indexes))
 
       if (length(tracked_fragments) > 0) {
-        new_x <- lapply(tracked_fragments, function(fragment) {
-          c(input$nce)
-        })
+        for (fragment in tracked_fragments) {
+          trace_index <- point_indexes[[fragment]]
+          point_value <- fragment_values[[fragment]]
 
-        new_y <- lapply(tracked_fragments, function(fragment) {
-          c(fragment_values[[fragment]])
-        })
+          if (is.null(trace_index) || length(trace_index) == 0 || is.na(point_value)) {
+            next
+          }
 
-        proxy <- plotlyProxyInvoke(
-          proxy,
-          "restyle",
-          list(x = new_x, y = new_y),
-          as.list(unname(point_indexes[tracked_fragments]))
-        )
+          proxy <- plotlyProxyInvoke(
+            proxy,
+            "restyle",
+            list(
+              x = list(list(input$nce)),
+              y = list(list(point_value)),
+              marker = list(color = "#ab1f25", size = 12)
+            ),
+            list(trace_index)
+          )
+        }
       }
     }
   }, ignoreNULL = FALSE)
