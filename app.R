@@ -463,6 +463,99 @@ build_fragment_point_traces <- function(nce_value, fragments, fragment_values, a
   Filter(Negate(is.null), traces)
 }
 
+build_isotope_segment_vectors <- function(peaks) {
+  if (is.null(peaks) || nrow(peaks) == 0) {
+    return(list(x = numeric(0), xend = numeric(0), y = numeric(0), yend = numeric(0)))
+  }
+
+  list(
+    x = peaks$mz,
+    xend = peaks$mz,
+    y = rep(0, nrow(peaks)),
+    yend = peaks$percent
+  )
+}
+
+build_isotope_plot_components <- function(profile, width, center_offset) {
+  distribution <- profile$distribution
+  monoisotopic_mz <- profile$monoisotopic_mz
+
+  width <- width %||% 0
+  center_offset <- center_offset %||% 0
+
+  window_center <- monoisotopic_mz + center_offset
+  half_width <- max(0, width) / 2
+  x_limits <- if (is.finite(monoisotopic_mz)) monoisotopic_mz + c(-4, 4) else range(distribution$mz, na.rm = TRUE)
+
+  if (any(!is.finite(x_limits))) {
+    x_limits <- c(min(distribution$mz, na.rm = TRUE), max(distribution$mz, na.rm = TRUE))
+  }
+
+  window_bounds <- c(window_center - half_width, window_center + half_width)
+  inside_window <- if (half_width > 0 && all(is.finite(window_bounds))) {
+    distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
+  } else {
+    rep(FALSE, nrow(distribution))
+  }
+
+  distribution$InsideWindow <- inside_window
+
+  mz_range <- range(distribution$mz, na.rm = TRUE)
+
+  if (!all(is.finite(mz_range))) {
+    mz_range <- c(window_center - half_width, window_center + half_width)
+  }
+
+  span <- max(diff(mz_range), half_width * 2)
+
+  if (!is.finite(span) || span <= 0) {
+    span <- max(half_width * 2, 1)
+  }
+
+  isolation_curve <- list(x = numeric(0), y = numeric(0), fillcolor = "rgba(58,128,185,0)")
+
+  if (half_width > 0 && is.finite(window_center)) {
+    x_vals <- seq(window_center - span, window_center + span, length.out = 400)
+    a <- half_width
+    b <- 10
+    d <- 100
+    relative <- if (a > 0) abs((x_vals - window_center) / a) else 0
+    y_vals <- d / (1 + (relative)^(2 * b))
+
+    isolation_curve <- list(
+      x = x_vals,
+      y = y_vals,
+      fillcolor = "rgba(58,128,185,0.25)"
+    )
+  }
+
+  list(
+    distribution = distribution,
+    x_limits = x_limits,
+    window_center = window_center,
+    half_width = half_width,
+    isolation_curve = isolation_curve,
+    inside_segments = build_isotope_segment_vectors(distribution[distribution$InsideWindow, , drop = FALSE]),
+    outside_segments = build_isotope_segment_vectors(distribution[!distribution$InsideWindow, , drop = FALSE])
+  )
+}
+
+ensure_plotly_vector <- function(values) {
+  if (length(values) == 0) {
+    return(NA_real_)
+  }
+
+  values
+}
+
+wrap_restyle_vector <- function(values) {
+  list(ensure_plotly_vector(values))
+}
+
+wrap_restyle_value <- function(value) {
+  list(value)
+}
+
 ui <- fluidPage(
   titlePanel("Altimeter Peptide Fragmentation Predictions"),
 
@@ -619,91 +712,117 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
-    distribution <- profile$distribution
+    session$userData$isotope_plot_ready <- FALSE
 
-    monoisotopic_mz <- profile$monoisotopic_mz
-    center_offset <- isolation_center_offset() %||% 0
-    window_center <- monoisotopic_mz + center_offset
-    width <- input$isolation_width %||% 0
-    half_width <- max(0, width) / 2
+    width <- isolate(input$isolation_width %||% 0)
+    center_offset <- isolate(isolation_center_offset() %||% 0)
+    components <- build_isotope_plot_components(profile, width, center_offset)
 
-    x_limits <- if (is.finite(monoisotopic_mz)) monoisotopic_mz + c(-4, 4) else NULL
+    isolation_curve <- components$isolation_curve
+    inside_segments <- components$inside_segments
+    outside_segments <- components$outside_segments
 
-    window_bounds <- c(window_center - half_width, window_center + half_width)
-    distribution$InsideWindow <- distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
+    plot <- plot_ly()
 
-    isolation_curve <- NULL
+    plot <- plot %>% add_trace(
+      x = ensure_plotly_vector(isolation_curve$x),
+      y = ensure_plotly_vector(isolation_curve$y),
+      type = "scatter",
+      mode = "lines",
+      line = list(color = "#3a80b9", width = 1),
+      fill = "tozeroy",
+      fillcolor = isolation_curve$fillcolor,
+      hoverinfo = "none",
+      name = "Isolation window"
+    )
 
-    if (half_width > 0 && is.finite(window_center)) {
-      mz_range <- range(distribution$mz, na.rm = TRUE)
+    plot <- plot %>% add_segments(
+      x = ensure_plotly_vector(inside_segments$x),
+      xend = ensure_plotly_vector(inside_segments$xend),
+      y = ensure_plotly_vector(inside_segments$y),
+      yend = ensure_plotly_vector(inside_segments$yend),
+      line = list(color = "#193c55", width = 4),
+      hoverinfo = "x+y",
+      name = "Inside window"
+    )
 
-      if (!all(is.finite(mz_range))) {
-        mz_range <- c(window_center - half_width, window_center + half_width)
-      }
+    plot <- plot %>% add_segments(
+      x = ensure_plotly_vector(outside_segments$x),
+      xend = ensure_plotly_vector(outside_segments$xend),
+      y = ensure_plotly_vector(outside_segments$y),
+      yend = ensure_plotly_vector(outside_segments$yend),
+      line = list(color = "rgba(25,60,85,0.45)", width = 3),
+      hoverinfo = "x+y",
+      name = "Outside window"
+    )
 
-      span <- max(diff(mz_range), half_width * 2)
+    plot <- plot %>% layout(
+      title = paste0("Theoretical isotope distribution (z = ", profile$charge, "+)"),
+      xaxis = list(title = "m/z", range = components$x_limits, zeroline = FALSE),
+      yaxis = list(title = "Relative intensity", range = c(0, 100.05), ticksuffix = "%"),
+      hovermode = "x unified",
+      showlegend = FALSE,
+      margin = list(t = 40)
+    )
 
-      if (!is.finite(span) || span <= 0) {
-        span <- half_width * 2
-      }
+    session$userData$isotope_profile_cache <- profile
+    session$userData$isotope_trace_indices <- list(isolation = 0, inside = 1, outside = 2)
+    session$userData$isotope_plot_ready <- TRUE
 
-      x_vals <- seq(window_center - span, window_center + span, length.out = 400)
-      a <- half_width
-      b <- 10
-      d <- 100
-      relative <- if (a > 0) abs((x_vals - window_center) / a) else 0
-      y_vals <- d / (1 + (relative)^(2 * b))
-
-      isolation_curve <- data.frame(
-        x = x_vals,
-        ymin = 0,
-        ymax = y_vals
-      )
-    }
-
-    plot <- ggplot(distribution, aes(x = mz, y = percent))
-
-    if (!is.null(isolation_curve)) {
-      plot <- plot +
-        geom_ribbon(
-          data = isolation_curve,
-          aes(x = x, ymin = ymin, ymax = ymax),
-          inherit.aes = FALSE,
-          fill = "#d8eafd",
-          alpha = 0.4
-        ) +
-        geom_line(
-          data = isolation_curve,
-          aes(x = x, y = ymax),
-          inherit.aes = FALSE,
-          color = "#3a80b9",
-          linewidth = 0.6
-        )
-    }
-
-    plot <- plot +
-      geom_segment(
-        aes(xend = mz, yend = 0, color = InsideWindow),
-        linewidth = 0.8, color = "#193c55"
-      ) +
-      labs(
-        title = paste0("Theoretical isotope distribution (z = ", profile$charge, "+)"),
-        x = "m/z",
-        y = "Relative intensity"
-      ) +
-      scale_y_continuous(limits = c(0, 100.05), breaks = seq(0, 100, by = 25)) +
-      (if (!is.null(x_limits)) coord_cartesian(xlim = x_limits) else NULL) +
-      theme_minimal() +
-      theme(
-        panel.grid.minor = element_blank(),
-        panel.grid.major.x = element_blank(),
-        axis.text = element_text(color = "#193c55"),
-        axis.title = element_text(color = "#193c55"),
-        plot.title = element_text(color = "#193c55")
-      )
-
-    ggplotly(plot, tooltip = c("text"))
+    plot
   })
+
+  observeEvent({
+    list(input$isolation_width, isolation_center_offset())
+  }, {
+    profile <- session$userData$isotope_profile_cache
+    traces <- session$userData$isotope_trace_indices
+
+    if (is.null(profile) || is.null(traces) || !isTRUE(session$userData$isotope_plot_ready)) {
+      return()
+    }
+
+    width <- input$isolation_width %||% 0
+    center_offset <- isolation_center_offset() %||% 0
+    components <- build_isotope_plot_components(profile, width, center_offset)
+
+    proxy <- plotlyProxy("isotope_plot", session)
+
+    proxy <- plotlyProxyInvoke(
+      proxy,
+      "restyle",
+      list(
+        x = wrap_restyle_vector(components$isolation_curve$x),
+        y = wrap_restyle_vector(components$isolation_curve$y),
+        fillcolor = wrap_restyle_value(components$isolation_curve$fillcolor)
+      ),
+      list(traces$isolation)
+    )
+
+    proxy <- plotlyProxyInvoke(
+      proxy,
+      "restyle",
+      list(
+        x = wrap_restyle_vector(components$inside_segments$x),
+        xend = wrap_restyle_vector(components$inside_segments$xend),
+        y = wrap_restyle_vector(components$inside_segments$y),
+        yend = wrap_restyle_vector(components$inside_segments$yend)
+      ),
+      list(traces$inside)
+    )
+
+    proxy <- plotlyProxyInvoke(
+      proxy,
+      "restyle",
+      list(
+        x = wrap_restyle_vector(components$outside_segments$x),
+        xend = wrap_restyle_vector(components$outside_segments$xend),
+        y = wrap_restyle_vector(components$outside_segments$y),
+        yend = wrap_restyle_vector(components$outside_segments$yend)
+      ),
+      list(traces$outside)
+    )
+  }, ignoreNULL = FALSE)
 
   spectrum_data <- reactive({
     curve_data_df <- curve_data()
