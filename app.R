@@ -15,6 +15,7 @@ library(OrgMassSpecR)
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
 koina_isotope_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_isotopes/infer"
 proton_mass <- 1.007276466812
+min_isotope_probability <- 0.01
 
 `%||%` <- function(lhs, rhs) {
   if (!is.null(lhs)) lhs else rhs
@@ -257,7 +258,8 @@ fetch_isotope_intensities <- function(sequence, charge, nce, efficiency_matrix) 
   }
 
   parsed <- httr::content(response)
-  parse_isotope_prediction_outputs(parsed$outputs, num_requests)
+  predictions <- parse_isotope_prediction_outputs(parsed$outputs, num_requests)
+  filter_isotope_predictions(predictions, min_isotope_probability)
 }
 
 parse_isotope_prediction_outputs <- function(outputs, num_requests) {
@@ -293,6 +295,56 @@ parse_isotope_prediction_outputs <- function(outputs, num_requests) {
     mz = mzs,
     intensities = intensity_matrix
   )
+}
+
+filter_isotope_predictions <- function(predictions, min_probability = 0.01) {
+  if (is.null(predictions) || is.null(predictions$intensities)) {
+    return(predictions)
+  }
+
+  intensity_matrix <- predictions$intensities
+
+  if (!is.matrix(intensity_matrix)) {
+    return(predictions)
+  }
+
+  column_count <- ncol(intensity_matrix)
+
+  if (column_count == 0) {
+    predictions$fragments <- predictions$fragments[0]
+    if (!is.null(predictions$mz)) {
+      predictions$mz <- predictions$mz[0]
+    }
+    return(predictions)
+  }
+
+  threshold <- suppressWarnings(as.numeric(min_probability))
+
+  if (!is.finite(threshold) || threshold < 0) {
+    threshold <- 0
+  }
+
+  keep_mask <- apply(intensity_matrix, 2, function(column) {
+    any(is.finite(column) & column >= threshold)
+  })
+
+  if (length(keep_mask) != column_count) {
+    keep_mask <- rep(TRUE, column_count)
+  }
+
+  keep_mask[is.na(keep_mask)] <- FALSE
+
+  predictions$intensities <- intensity_matrix[, keep_mask, drop = FALSE]
+
+  if (!is.null(predictions$fragments)) {
+    predictions$fragments <- predictions$fragments[keep_mask]
+  }
+
+  if (!is.null(predictions$mz)) {
+    predictions$mz <- predictions$mz[keep_mask]
+  }
+
+  predictions
 }
 
 expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
@@ -613,13 +665,20 @@ build_isotope_segment_vectors <- function(peaks) {
 }
 
 normalize_intensity_matrix <- function(intensity_matrix) {
-  if (is.null(intensity_matrix) || !is.matrix(intensity_matrix) || nrow(intensity_matrix) == 0) {
+  if (is.null(intensity_matrix) || !is.matrix(intensity_matrix)) {
     return(matrix(0, nrow = 0, ncol = 0))
+  }
+
+  row_count <- nrow(intensity_matrix)
+  column_count <- ncol(intensity_matrix)
+
+  if (row_count == 0 || column_count == 0) {
+    return(matrix(0, nrow = row_count, ncol = column_count))
   }
 
   normalized <- intensity_matrix
 
-  for (i in seq_len(nrow(intensity_matrix))) {
+  for (i in seq_len(row_count)) {
     row_values <- as.numeric(intensity_matrix[i, , drop = TRUE])
     max_val <- suppressWarnings(max(row_values, na.rm = TRUE))
 
@@ -715,7 +774,10 @@ is_isotope_annotation <- function(annotations) {
     return(rep(FALSE, 0))
   }
 
-  grepl("\\+i", annotations, ignore.case = TRUE)
+  values <- as.character(annotations)
+  mask <- grepl("\\+i", values, ignore.case = TRUE)
+  mask[is.na(mask)] <- FALSE
+  mask
 }
 
 build_isotope_plot_components <- function(profile, width, center_offset) {
