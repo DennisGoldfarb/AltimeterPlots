@@ -1616,7 +1616,6 @@ server <- function(input, output, session) {
 
     panel_plots <- lapply(seq_along(targets), function(i) {
       panel_name <- targets[[i]]
-      showlegend <- i == 1
 
       panel_plot <- plot_ly()
       panel_plot <- panel_plot %>% add_trace(
@@ -1627,8 +1626,8 @@ server <- function(input, output, session) {
         line = list(color = "#193c55", width = 2),
         hoverinfo = "text",
         text = "",
-        name = sprintf("%s peaks", panel_name),
-        showlegend = showlegend
+        name = panel_name,
+        showlegend = FALSE
       )
 
       panel_plot <- panel_plot %>% add_trace(
@@ -1639,8 +1638,8 @@ server <- function(input, output, session) {
         line = list(color = "rgba(255,127,14,0.5)", width = 4),
         hoverinfo = "text",
         text = "",
-        name = sprintf("%s isotopes", panel_name),
-        showlegend = showlegend
+        name = paste(panel_name, "isotopes"),
+        showlegend = FALSE
       )
 
       panel_plot
@@ -1650,19 +1649,39 @@ server <- function(input, output, session) {
     fig <- do.call(subplot, subplot_args)
 
     layout_args <- list(
-      showlegend = TRUE,
-      legend = list(orientation = "h", x = 0, y = -0.25),
+      showlegend = FALSE,
       title = "Fragment zoom",
       hovermode = "x",
       margin = list(t = 60, b = 80)
     )
 
+    annotations <- vector("list", length(targets))
+
     for (i in seq_along(targets)) {
       suffix <- if (i == 1) "" else as.character(i)
       layout_args[[paste0("xaxis", suffix)]] <- list(title = "m/z")
-      layout_args[[paste0("yaxis", suffix)]] <- list(title = sprintf("%s fragments", targets[[i]]), range = c(0, 1.05))
+      layout_args[[paste0("yaxis", suffix)]] <- list(
+        title = "",
+        showticklabels = FALSE,
+        ticks = "",
+        automargin = TRUE,
+        zeroline = FALSE,
+        rangemode = "tozero",
+        autorange = TRUE
+      )
+
+      annotations[[i]] <- list(
+        text = targets[[i]],
+        xref = paste0("x", suffix, " domain"),
+        yref = paste0("y", suffix, " domain"),
+        x = 0.5,
+        y = 1.08,
+        showarrow = FALSE,
+        font = list(size = 12, color = "#333333")
+      )
     }
 
+    layout_args$annotations <- annotations
     layout_args$p <- fig
     fig <- do.call(plotly::layout, layout_args)
 
