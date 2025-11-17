@@ -504,8 +504,8 @@ ui <- fluidPage(
       ),
       div(
         class = "d-flex gap-2 mt-2",
-        actionButton("isolation_center_left", "Center -0.1 m/z"),
-        actionButton("isolation_center_right", "Center +0.1 m/z")
+        actionButton("isolation_center_left", "Center -0.025 m/z"),
+        actionButton("isolation_center_right", "Center +0.025 m/z")
       ),
       div(
         class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
@@ -617,7 +617,7 @@ server <- function(input, output, session) {
     width <- input$isolation_width %||% 0
     half_width <- max(0, width) / 2
 
-    x_limits <- if (is.finite(monoisotopic_mz)) monoisotopic_mz + c(-5, 5) else NULL
+    x_limits <- if (is.finite(monoisotopic_mz)) monoisotopic_mz + c(-4, 4) else NULL
 
     window_bounds <- c(window_center - half_width, window_center + half_width)
     distribution$InsideWindow <- distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
@@ -831,12 +831,12 @@ server <- function(input, output, session) {
 
   observeEvent(input$isolation_center_left, {
     offset <- isolation_center_offset() %||% 0
-    isolation_center_offset(offset - 0.1)
+    isolation_center_offset(offset - 0.025)
   })
 
   observeEvent(input$isolation_center_right, {
     offset <- isolation_center_offset() %||% 0
-    isolation_center_offset(offset + 0.1)
+    isolation_center_offset(offset + 0.025)
   })
 
   observeEvent(input$nce_play, {
