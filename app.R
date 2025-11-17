@@ -559,6 +559,7 @@ server <- function(input, output, session) {
   isolation_center_offset <- reactiveVal(0)
   isolation_center_playing <- reactiveVal(FALSE)
   isolation_center_direction <- reactiveVal(1)
+  isolation_center_timer <- reactiveTimer(200)
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -892,11 +893,11 @@ server <- function(input, output, session) {
   })
 
   observe({
+    isolation_center_timer()
+
     if (!isTRUE(isolation_center_playing())) {
       return()
     }
-
-    invalidateLater(50, session)
 
     profile <- isolate(precursor_profile())
 
