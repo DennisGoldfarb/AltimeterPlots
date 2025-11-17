@@ -111,7 +111,18 @@ compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_rela
   stopifnot(is.character(sequence), length(sequence) == 1)
   stopifnot(is.numeric(charge), length(charge) == 1, charge > 0)
 
-  distribution <- OrgMassSpecR::IsotopicDistribution(peptide = sequence)
+  composition <- tryCatch(
+    OrgMassSpecR::ConvertPeptide(sequence, output = "elements", IAA = TRUE),
+    error = function(e) NULL
+  )
+
+  if (is.null(composition) || length(composition) == 0) {
+    stop("Unable to determine elemental composition for peptide")
+  }
+
+  composition$H <- (composition$H %||% 0) + charge
+
+  distribution <- OrgMassSpecR::IsotopicDistribution(formula = composition, charge = charge)
 
   if (!is.data.frame(distribution) || nrow(distribution) == 0) {
     stop("Unable to compute isotopic distribution for peptide")
