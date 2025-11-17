@@ -615,10 +615,9 @@ server <- function(input, output, session) {
 
     plot <- ggplot(
       spectrum_df,
-      aes(x = MZ, text = tooltip_text)
+      aes(x = MZ, y = NormalizedIntensity, text = tooltip_text)
     ) +
       geom_segment(aes(xend = MZ, y = 0, yend = NormalizedIntensity), color = "#193c55", linewidth = 0.6) +
-      geom_point(aes(y = NormalizedIntensity), color = "#ab1f25", size = 1.5) +
       labs(
         title = paste0("Predicted spectrum at ", nce_value, " NCE"),
         x = "m/z",
