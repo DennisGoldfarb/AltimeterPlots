@@ -504,8 +504,13 @@ ui <- fluidPage(
       ),
       div(
         class = "d-flex gap-2 mt-2",
-        actionButton("isolation_center_left", "Center -0.025 m/z"),
-        actionButton("isolation_center_right", "Center +0.025 m/z")
+        actionButton("isolation_center_left", "Center -0.01 m/z"),
+        actionButton("isolation_center_right", "Center +0.01 m/z")
+      ),
+      div(
+        class = "d-flex gap-2 mt-2",
+        actionButton("isolation_center_play", "Center Play"),
+        actionButton("isolation_center_stop", "Center Stop")
       ),
       div(
         class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
@@ -552,6 +557,9 @@ server <- function(input, output, session) {
   nce_direction <- reactiveVal(1)
   nce_timer <- reactiveTimer(200)
   isolation_center_offset <- reactiveVal(0)
+  isolation_center_playing <- reactiveVal(FALSE)
+  isolation_center_direction <- reactiveVal(1)
+  isolation_center_timer <- reactiveTimer(200)
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -577,6 +585,8 @@ server <- function(input, output, session) {
     profile <- compute_isotope_profile(input$peptide, input$charge)
     profile$message <- NULL
     isolation_center_offset(0)
+    isolation_center_playing(FALSE)
+    isolation_center_direction(1)
     profile
   }, ignoreNULL = TRUE)
 
@@ -831,12 +841,12 @@ server <- function(input, output, session) {
 
   observeEvent(input$isolation_center_left, {
     offset <- isolation_center_offset() %||% 0
-    isolation_center_offset(offset - 0.025)
+    isolation_center_offset(offset - 0.01)
   })
 
   observeEvent(input$isolation_center_right, {
     offset <- isolation_center_offset() %||% 0
-    isolation_center_offset(offset + 0.025)
+    isolation_center_offset(offset + 0.01)
   })
 
   observeEvent(input$nce_play, {
@@ -845,6 +855,14 @@ server <- function(input, output, session) {
 
   observeEvent(input$nce_stop, {
     nce_playing(FALSE)
+  })
+
+  observeEvent(input$isolation_center_play, {
+    isolation_center_playing(TRUE)
+  })
+
+  observeEvent(input$isolation_center_stop, {
+    isolation_center_playing(FALSE)
   })
 
   observe({
@@ -872,6 +890,37 @@ server <- function(input, output, session) {
 
     nce_direction(direction)
     updateSliderInput(session, "nce", value = next_value)
+  })
+
+  observe({
+    isolation_center_timer()
+
+    if (!isTRUE(isolation_center_playing())) {
+      return()
+    }
+
+    profile <- isolate(precursor_profile())
+
+    if (is.null(profile) || is.null(profile$monoisotopic_mz) || !is.finite(profile$monoisotopic_mz)) {
+      return()
+    }
+
+    direction <- isolation_center_direction()
+    step <- 0.01
+    limit <- 2
+    offset <- isolation_center_offset() %||% 0
+    next_offset <- offset + (step * direction)
+
+    if (next_offset >= limit) {
+      next_offset <- limit
+      direction <- -1
+    } else if (next_offset <= -limit) {
+      next_offset <- -limit
+      direction <- 1
+    }
+
+    isolation_center_direction(direction)
+    isolation_center_offset(next_offset)
   })
 
   observeEvent({
