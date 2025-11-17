@@ -552,8 +552,7 @@ build_isotope_plot_components <- function(profile, width, center_offset) {
     window_center = window_center,
     half_width = half_width,
     isolation_curve = isolation_curve,
-    inside_segments = build_isotope_segment_vectors(distribution[distribution$InsideWindow, , drop = FALSE]),
-    outside_segments = build_isotope_segment_vectors(distribution[!distribution$InsideWindow, , drop = FALSE])
+    peak_segments = build_isotope_segment_vectors(distribution)
   )
 }
 
@@ -736,8 +735,7 @@ server <- function(input, output, session) {
     components <- build_isotope_plot_components(profile, width, center_offset)
 
     isolation_curve <- components$isolation_curve
-    inside_segments <- components$inside_segments
-    outside_segments <- components$outside_segments
+    peak_segments <- components$peak_segments
 
     plot <- plot_ly()
 
@@ -754,23 +752,13 @@ server <- function(input, output, session) {
     )
 
     plot <- plot %>% add_trace(
-      x = ensure_plotly_vector(inside_segments$x),
-      y = ensure_plotly_vector(inside_segments$y),
+      x = ensure_plotly_vector(peak_segments$x),
+      y = ensure_plotly_vector(peak_segments$y),
       type = "scatter",
       mode = "lines",
       line = list(color = "#193c55", width = 4),
       hoverinfo = "x+y",
-      name = "Inside window"
-    )
-
-    plot <- plot %>% add_trace(
-      x = ensure_plotly_vector(outside_segments$x),
-      y = ensure_plotly_vector(outside_segments$y),
-      type = "scatter",
-      mode = "lines",
-      line = list(color = "rgba(25,60,85,0.45)", width = 3),
-      hoverinfo = "x+y",
-      name = "Outside window"
+      name = "Isotope peaks"
     )
 
     plot <- plot %>% layout(
@@ -783,7 +771,7 @@ server <- function(input, output, session) {
     )
 
     session$userData$isotope_profile_cache <- profile
-    session$userData$isotope_trace_indices <- list(isolation = 0, inside = 1, outside = 2)
+    session$userData$isotope_trace_indices <- list(isolation = 0, peaks = 1)
     session$userData$isotope_plot_ready <- TRUE
 
     plot
@@ -820,20 +808,10 @@ server <- function(input, output, session) {
       proxy,
       "restyle",
       list(
-        x = wrap_restyle_vector(components$inside_segments$x),
-        y = wrap_restyle_vector(components$inside_segments$y)
+        x = wrap_restyle_vector(components$peak_segments$x),
+        y = wrap_restyle_vector(components$peak_segments$y)
       ),
-      list(traces$inside)
-    )
-
-    proxy <- plotlyProxyInvoke(
-      proxy,
-      "restyle",
-      list(
-        x = wrap_restyle_vector(components$outside_segments$x),
-        y = wrap_restyle_vector(components$outside_segments$y)
-      ),
-      list(traces$outside)
+      list(traces$peaks)
     )
   }, ignoreNULL = FALSE)
 
