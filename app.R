@@ -10,8 +10,10 @@ library(jsonlite)
 library(plotly)
 library(splines)
 library(ggplot2)
+library(OrgMassSpecR)
 
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
+proton_mass <- 1.007276466812
 
 `%||%` <- function(lhs, rhs) {
   if (!is.null(lhs)) lhs else rhs
@@ -103,6 +105,31 @@ resolve_output <- function(output_map, candidates) {
     }
   }
   NULL
+}
+
+compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_relative = 1e-3) {
+  stopifnot(is.character(sequence), length(sequence) == 1)
+  stopifnot(is.numeric(charge), length(charge) == 1, charge > 0)
+
+  composition <- OrgMassSpecR::ConvertPeptide(sequence, output = "elements", IAA = TRUE)
+
+  if (is.null(composition) || length(composition) == 0) {
+    stop("Unable to determine elemental composition for peptide")
+  }
+
+  distribution <- OrgMassSpecR::IsotopicDistribution(formula = composition, charge = charge)
+
+  if (!is.data.frame(distribution) || nrow(distribution) == 0) {
+    stop("Unable to compute isotopic distribution for peptide")
+  }
+
+  distribution <- distribution[seq_len(min(nrow(distribution), max_isotopes)), , drop = FALSE]
+
+  list(
+    distribution = distribution,
+    monoisotopic_mz = distribution$mz[[1]],
+    charge = charge
+  )
 }
 
 expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
@@ -462,6 +489,14 @@ ui <- fluidPage(
         value = 30,
         step = 0.1
       ),
+      numericInput(
+        inputId = "isolation_width",
+        label = "Isolation window width (m/z)",
+        min = 0.1,
+        max = 10,
+        value = 1.6,
+        step = 0.1
+      ),
       div(
         class = "d-flex gap-2", # rely on bootstrap utility classes bundled with shiny
         actionButton("nce_decrement", "-0.1 NCE"),
@@ -484,6 +519,8 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
+      h4("Precursor isotope envelope"),
+      plotlyOutput("isotope_plot", height = "300px"),
       fluidRow(
         column(
           width = 6,
@@ -523,6 +560,14 @@ server <- function(input, output, session) {
     })
   }, ignoreNULL = TRUE)
 
+  precursor_profile <- eventReactive(input$submit, {
+    req(input$peptide, input$charge)
+
+    profile <- compute_isotope_profile(input$peptide, input$charge)
+    profile$message <- NULL
+    profile
+  }, ignoreNULL = TRUE)
+
   output$status <- renderUI({
     preds <- predictions()
     req(preds)
@@ -543,6 +588,59 @@ server <- function(input, output, session) {
     }
 
     evaluate_fragment_curves(preds$data)
+  })
+
+  output$isotope_plot <- renderPlotly({
+    profile <- precursor_profile()
+
+    if (is.null(profile)) {
+      return(NULL)
+    }
+
+    distribution <- profile$distribution
+
+    center <- profile$monoisotopic_mz
+    width <- input$isolation_width %||% 0
+    half_width <- max(0, width) / 2
+
+    window_bounds <- c(center - half_width, center + half_width)
+    distribution$InsideWindow <- distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
+
+    shading_df <- data.frame(
+      xmin = window_bounds[1],
+      xmax = window_bounds[2],
+      ymin = 0,
+      ymax = 1.05
+    )
+
+    plot <- ggplot(distribution, aes(x = mz, y = percent)) +
+      geom_rect(
+        data = shading_df,
+        aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+        inherit.aes = FALSE,
+        fill = "#d8eafd",
+        alpha = 0.4
+      ) +
+      geom_segment(
+        aes(xend = mz, yend = 0, color = InsideWindow),
+        linewidth = 0.8, color = "#193c55"
+      ) +
+      labs(
+        title = paste0("Theoretical isotope distribution (z = ", profile$charge, "+)"),
+        x = "m/z",
+        y = "Relative intensity"
+      ) +
+      scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, by = 0.25)) +
+      theme_minimal() +
+      theme(
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "#193c55"),
+        axis.title = element_text(color = "#193c55"),
+        plot.title = element_text(color = "#193c55")
+      )
+
+    ggplotly(plot, tooltip = c("text"))
   })
 
   spectrum_data <- reactive({
