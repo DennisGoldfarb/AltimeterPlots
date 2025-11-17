@@ -18,6 +18,7 @@ proton_mass <- 1.007276466812
 min_isotope_probability <- 0.01
 zoom_fragment_targets <- c("y1", "y5", "y10", "y13")
 zoom_fragment_left_padding <- 0.05
+zoom_fragment_panel_spacing <- 0.04
 
 `%||%` <- function(lhs, rhs) {
   if (!is.null(lhs)) lhs else rhs
@@ -1662,11 +1663,56 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
-    panel_plots <- lapply(seq_along(targets), function(i) {
-      panel_name <- targets[[i]]
+    plot <- plot_ly()
 
-      panel_plot <- plot_ly()
-      panel_plot <- panel_plot %>% add_trace(
+    spacing <- zoom_fragment_panel_spacing %||% 0
+    spacing <- if (!is.numeric(spacing) || spacing < 0 || !is.finite(spacing)) 0 else spacing
+    n_panels <- length(targets)
+    panel_width <- if (n_panels > 0) {
+      max(0, min(1, (1 - spacing * (n_panels - 1)) / n_panels))
+    } else {
+      0
+    }
+
+    annotations <- vector("list", n_panels)
+    axis_suffixes <- character(n_panels)
+    axis_layouts <- list()
+    trace_map <- setNames(vector("list", n_panels), targets)
+    current_index <- 0
+
+    for (i in seq_along(targets)) {
+      panel_name <- targets[[i]]
+      suffix <- if (i == 1) "" else as.character(i)
+      axis_suffixes[[i]] <- suffix
+      xaxis_id <- paste0("x", suffix)
+      yaxis_id <- paste0("y", suffix)
+
+      start_domain <- (i - 1) * (panel_width + spacing)
+      end_domain <- min(1, start_domain + panel_width)
+      x_domain <- c(start_domain, end_domain)
+
+      axis_layouts[[paste0("xaxis", suffix)]] <- list(
+        title = "m/z",
+        showgrid = FALSE,
+        zeroline = FALSE,
+        domain = x_domain,
+        anchor = yaxis_id
+      )
+
+      axis_layouts[[paste0("yaxis", suffix)]] <- list(
+        title = "",
+        showticklabels = FALSE,
+        ticks = "",
+        automargin = TRUE,
+        zeroline = FALSE,
+        rangemode = "tozero",
+        autorange = TRUE,
+        showgrid = FALSE,
+        domain = c(0, 1),
+        anchor = xaxis_id
+      )
+
+      plot <- plot %>% add_trace(
         x = ensure_plotly_vector(NA_real_),
         y = ensure_plotly_vector(NA_real_),
         type = "scatter",
@@ -1675,10 +1721,15 @@ server <- function(input, output, session) {
         hoverinfo = "text",
         text = "",
         name = panel_name,
-        showlegend = FALSE
+        showlegend = FALSE,
+        xaxis = xaxis_id,
+        yaxis = yaxis_id
       )
 
-      panel_plot <- panel_plot %>% add_trace(
+      trace_map[[panel_name]] <- list(peaks = current_index)
+      current_index <- current_index + 1
+
+      plot <- plot %>% add_trace(
         x = ensure_plotly_vector(NA_real_),
         y = ensure_plotly_vector(NA_real_),
         type = "scatter",
@@ -1687,44 +1738,16 @@ server <- function(input, output, session) {
         hoverinfo = "text",
         text = "",
         name = paste(panel_name, "isotopes"),
-        showlegend = FALSE
+        showlegend = FALSE,
+        xaxis = xaxis_id,
+        yaxis = yaxis_id
       )
 
-      panel_plot
-    })
-
-    subplot_args <- c(
-      panel_plots,
-      list(nrows = 1, shareX = FALSE, shareY = FALSE, titleX = TRUE, titleY = TRUE)
-    )
-    fig <- do.call(subplot, subplot_args)
-
-    layout_args <- list(
-      showlegend = FALSE,
-      hovermode = "x",
-      margin = list(t = 60, b = 80)
-    )
-
-    annotations <- vector("list", length(targets))
-    axis_suffixes <- character(length(targets))
-
-    for (i in seq_along(targets)) {
-      suffix <- if (i == 1) "" else as.character(i)
-      axis_suffixes[[i]] <- suffix
-      layout_args[[paste0("xaxis", suffix)]] <- list(title = "m/z", showgrid = FALSE)
-      layout_args[[paste0("yaxis", suffix)]] <- list(
-        title = "",
-        showticklabels = FALSE,
-        ticks = "",
-        automargin = TRUE,
-        zeroline = FALSE,
-        rangemode = "tozero",
-        autorange = TRUE,
-        showgrid = FALSE
-      )
+      trace_map[[panel_name]]$isotopes <- current_index
+      current_index <- current_index + 1
 
       annotations[[i]] <- list(
-        text = targets[[i]],
+        text = panel_name,
         xref = paste0("x", suffix, " domain"),
         yref = paste0("y", suffix, " domain"),
         x = 0.5,
@@ -1734,23 +1757,24 @@ server <- function(input, output, session) {
       )
     }
 
-    layout_args$annotations <- annotations
-    layout_args$p <- fig
-    fig <- do.call(plotly::layout, layout_args)
+    layout_args <- c(
+      list(
+        p = plot,
+        showlegend = FALSE,
+        hovermode = "x",
+        margin = list(t = 60, b = 80),
+        annotations = annotations
+      ),
+      axis_layouts
+    )
 
-    trace_map <- setNames(vector("list", length(targets)), targets)
-    current_index <- 0
-
-    for (name in targets) {
-      trace_map[[name]] <- list(peaks = current_index, isotopes = current_index + 1)
-      current_index <- current_index + 2
-    }
+    plot <- do.call(plotly::layout, layout_args)
 
     session$userData$fragment_zoom_trace_indices <- trace_map
     session$userData$fragment_zoom_axis_suffixes <- setNames(axis_suffixes, targets)
     session$userData$fragment_zoom_plot_ready <- TRUE
 
-    fig
+    plot
   })
 
   observeEvent({
