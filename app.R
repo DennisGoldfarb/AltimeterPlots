@@ -645,6 +645,13 @@ server <- function(input, output, session) {
           inherit.aes = FALSE,
           fill = "#d8eafd",
           alpha = 0.4
+        ) +
+        geom_line(
+          data = isolation_curve,
+          aes(x = x, y = ymax),
+          inherit.aes = FALSE,
+          color = "#3a80b9",
+          linewidth = 0.6
         )
     }
 
