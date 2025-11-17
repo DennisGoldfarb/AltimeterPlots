@@ -253,13 +253,13 @@ extract_fragment_axis_map <- function(plotly_traces, fragments) {
       return(NULL)
     }
 
-    if (grepl("Fragment=", trace_name, fixed = TRUE)) {
-      candidate <- trimws(sub(".*Fragment=([^,]+).*", "\\1", trace_name))
+    if (grepl("Fragment\\s*=", trace_name)) {
+      candidate <- trimws(sub(".*Fragment\\s*=\\s*([^,]+).*", "\\1", trace_name))
       return(candidate)
     }
 
-    if (grepl("Fragment:", trace_name, fixed = TRUE)) {
-      candidate <- trimws(sub(".*Fragment:\\s*([^,]+).*", "\\1", trace_name))
+    if (grepl("Fragment\\s*:", trace_name)) {
+      candidate <- trimws(sub(".*Fragment\\s*:\\s*([^,]+).*", "\\1", trace_name))
       return(candidate)
     }
 
