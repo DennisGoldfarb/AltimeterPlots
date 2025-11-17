@@ -484,10 +484,18 @@ ui <- fluidPage(
     mainPanel(
       h3("Prediction output"),
       uiOutput("status"),
-      h4("Fragment spline curves"),
-      plotlyOutput("fragment_plot", height = "600px"),
-      h4("Predicted spectrum"),
-      plotlyOutput("spectrum_plot", height = "400px")
+      fluidRow(
+        column(
+          width = 6,
+          h4("Fragment spline curves"),
+          plotlyOutput("fragment_plot", height = "600px")
+        ),
+        column(
+          width = 6,
+          h4("Predicted spectrum"),
+          plotlyOutput("spectrum_plot", height = "400px")
+        )
+      )
     )
   )
 )
