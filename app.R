@@ -611,21 +611,24 @@ server <- function(input, output, session) {
 
     distribution <- profile$distribution
 
+    monoisotopic_mz <- profile$monoisotopic_mz
     center_offset <- isolation_center_offset() %||% 0
-    center <- profile$monoisotopic_mz + center_offset
+    window_center <- monoisotopic_mz + center_offset
     width <- input$isolation_width %||% 0
     half_width <- max(0, width) / 2
 
-    window_bounds <- c(center - half_width, center + half_width)
+    x_limits <- if (is.finite(monoisotopic_mz)) monoisotopic_mz + c(-5, 5) else NULL
+
+    window_bounds <- c(window_center - half_width, window_center + half_width)
     distribution$InsideWindow <- distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
 
     isolation_curve <- NULL
 
-    if (half_width > 0 && is.finite(center)) {
+    if (half_width > 0 && is.finite(window_center)) {
       mz_range <- range(distribution$mz, na.rm = TRUE)
 
       if (!all(is.finite(mz_range))) {
-        mz_range <- c(center - half_width, center + half_width)
+        mz_range <- c(window_center - half_width, window_center + half_width)
       }
 
       span <- max(diff(mz_range), half_width * 2)
@@ -634,11 +637,11 @@ server <- function(input, output, session) {
         span <- half_width * 2
       }
 
-      x_vals <- seq(center - span, center + span, length.out = 400)
+      x_vals <- seq(window_center - span, window_center + span, length.out = 400)
       a <- half_width
       b <- 10
       d <- 100
-      relative <- if (a > 0) abs((x_vals - center) / a) else 0
+      relative <- if (a > 0) abs((x_vals - window_center) / a) else 0
       y_vals <- d / (1 + (relative)^(2 * b))
 
       isolation_curve <- data.frame(
@@ -679,6 +682,7 @@ server <- function(input, output, session) {
         y = "Relative intensity"
       ) +
       scale_y_continuous(limits = c(0, 100.05), breaks = seq(0, 100, by = 25)) +
+      (if (!is.null(x_limits)) coord_cartesian(xlim = x_limits) else NULL) +
       theme_minimal() +
       theme(
         panel.grid.minor = element_blank(),
