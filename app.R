@@ -970,7 +970,7 @@ is_isotope_annotation <- function(annotations) {
   }
 
   values <- as.character(annotations)
-  mask <- grepl("\\+i", values, ignore.case = TRUE)
+  mask <- grepl("\\+[1-4]?i", values, ignore.case = TRUE, perl = TRUE)
   mask[is.na(mask)] <- FALSE
   mask
 }
