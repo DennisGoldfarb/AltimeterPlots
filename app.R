@@ -13,6 +13,7 @@ library(ggplot2)
 library(OrgMassSpecR)
 
 koina_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_splines/infer"
+koina_isotope_infer_url <- "https://koina.wilhelmlab.org:443/v2/models/Altimeter_2024_isotopes/infer"
 proton_mass <- 1.007276466812
 
 `%||%` <- function(lhs, rhs) {
@@ -62,15 +63,12 @@ parse_prediction_outputs <- function(outputs) {
     stop("Koina response did not include any outputs")
   }
 
-  output_map <- setNames(
-    lapply(outputs, function(entry) entry$data),
-    vapply(outputs, function(entry) entry$name, character(1))
-  )
+  output_map <- create_output_entry_map(outputs)
 
-  fragments <- unlist(resolve_output(output_map, c("annotations")))
-  coefficients <- as.numeric(unlist(resolve_output(output_map, c("coefficients"))))
-  knots <- as.numeric(unlist(resolve_output(output_map, c("knots"))))
-  mzs <- as.numeric(unlist(resolve_output(output_map, c("mz"))))
+  fragments <- unlist(resolve_output_data(output_map, c("annotations")))
+  coefficients <- as.numeric(unlist(resolve_output_data(output_map, c("coefficients"))))
+  knots <- as.numeric(unlist(resolve_output_data(output_map, c("knots"))))
+  mzs <- as.numeric(unlist(resolve_output_data(output_map, c("mz"))))
 
   if (is.null(fragments) || is.null(coefficients) || is.null(knots) || is.null(mzs)){
     stop("Koina response missing fragments, coefficients, mzs, or knot vector")
@@ -98,14 +96,23 @@ parse_prediction_outputs <- function(outputs) {
   )
 }
 
-resolve_output <- function(output_map, candidates) {
+create_output_entry_map <- function(outputs) {
+  if (length(outputs) == 0) {
+    return(list())
+  }
+
+  setNames(outputs, vapply(outputs, function(entry) entry$name, character(1)))
+}
+
+resolve_output_data <- function(output_map, candidates) {
   for (name in candidates) {
     if (name %in% names(output_map)) {
-      return(output_map[[name]])
+      return(output_map[[name]]$data)
     }
   }
   NULL
 }
+
 
 compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_relative = 1e-3) {
   stopifnot(is.character(sequence), length(sequence) == 1)
@@ -129,6 +136,162 @@ compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_rela
     distribution = distribution,
     monoisotopic_mz = distribution$mz[[1]],
     charge = charge
+  )
+}
+
+generate_isolation_offsets <- function(limit = 2, step = 0.005) {
+  seq(-abs(limit), abs(limit), by = abs(step))
+}
+
+isolation_curve_value <- function(mz, center, half_width, scale = 100, slope = 10) {
+  if (!is.finite(mz) || !is.finite(center) || !is.finite(half_width) || half_width <= 0) {
+    return(0)
+  }
+
+  relative <- abs((mz - center) / half_width)
+  scale / (1 + (relative)^(2 * slope))
+}
+
+compute_isolation_efficiency_matrix <- function(profile, width, offsets, max_isotopes = 5) {
+  if (is.null(profile) || is.null(profile$distribution) || length(offsets) == 0) {
+    return(matrix(0, nrow = 0, ncol = max_isotopes))
+  }
+
+  distribution <- profile$distribution
+
+  if (is.null(distribution$mz)) {
+    return(matrix(0, nrow = 0, ncol = max_isotopes))
+  }
+
+  isotope_mz <- distribution$mz[seq_len(min(length(distribution$mz), max_isotopes))]
+
+  if (length(isotope_mz) < max_isotopes) {
+    isotope_mz <- c(isotope_mz, rep(NA_real_, max_isotopes - length(isotope_mz)))
+  }
+
+  half_width <- max(0, width %||% 0) / 2
+  offsets <- as.numeric(offsets)
+
+  efficiency_matrix <- matrix(0, nrow = length(offsets), ncol = max_isotopes)
+
+  if (half_width <= 0 || !is.finite(profile$monoisotopic_mz)) {
+    return(efficiency_matrix)
+  }
+
+  for (i in seq_along(offsets)) {
+    center <- profile$monoisotopic_mz + offsets[[i]]
+    efficiency_matrix[i, ] <- vapply(
+      isotope_mz,
+      function(mz) isolation_curve_value(mz, center, half_width) / 100,
+      numeric(1)
+    )
+  }
+
+  efficiency_matrix
+}
+
+closest_offset_index <- function(offsets, target, tolerance = 1e-6) {
+  if (length(offsets) == 0 || is.na(target)) {
+    return(NA_integer_)
+  }
+
+  diffs <- abs(offsets - target)
+  idx <- which.min(diffs)
+
+  if (length(idx) == 0 || diffs[[idx]] > tolerance) {
+    return(NA_integer_)
+  }
+
+  idx
+}
+
+fetch_isotope_intensities <- function(sequence, charge, nce, efficiency_matrix) {
+  stopifnot(is.character(sequence), length(sequence) == 1)
+  stopifnot(is.numeric(charge), length(charge) == 1)
+
+  if (is.null(efficiency_matrix) || !is.matrix(efficiency_matrix) || nrow(efficiency_matrix) == 0) {
+    stop("No isolation efficiencies available for Koina isotope request")
+  }
+
+  num_requests <- nrow(efficiency_matrix)
+  num_isotopes <- ncol(efficiency_matrix)
+
+  payload <- toJSON(
+    list(
+      id = "0",
+      inputs = list(
+        list(
+          name = "peptide_sequences",
+          shape = c(num_requests, 1),
+          datatype = "BYTES",
+          data = rep(sequence, num_requests)
+        ),
+        list(
+          name = "precursor_charges",
+          shape = c(num_requests, 1),
+          datatype = "INT32",
+          data = rep(as.integer(charge), num_requests)
+        ),
+        list(
+          name = "collision_energies",
+          shape = c(num_requests, 1),
+          datatype = "FP32",
+          data = rep(as.numeric(nce), num_requests)
+        ),
+        list(
+          name = "isotope_isolation_efficiencies",
+          shape = c(num_requests, num_isotopes),
+          datatype = "FP32",
+          data = as.numeric(t(efficiency_matrix))
+        )
+      )
+    ),
+    auto_unbox = TRUE
+  )
+
+  response <- httr::POST(koina_isotope_infer_url, body = payload, encode = "json")
+  status <- httr::http_status(response)
+
+  if (!identical(status$category, "Success")) {
+    stop("Koina isotope request failed (", status$reason, ")")
+  }
+
+  parsed <- httr::content(response)
+  parse_isotope_prediction_outputs(parsed$outputs, num_requests)
+}
+
+parse_isotope_prediction_outputs <- function(outputs, num_requests) {
+  if (length(outputs) == 0) {
+    stop("Koina isotope response did not include any outputs")
+  }
+
+  output_map <- create_output_entry_map(outputs)
+
+  fragments <- unlist(resolve_output_data(output_map, c("annotations", "fragments")))
+  mzs <- as.numeric(unlist(resolve_output_data(output_map, c("mz", "mzs"))))
+  intensity_data <- resolve_output_data(output_map, c("intensities", "intensity", "predictions"))
+
+  if (is.null(fragments) || length(fragments) == 0) {
+    stop("Koina isotope response missing fragment annotations")
+  }
+
+  if (is.null(intensity_data)) {
+    stop("Koina isotope response missing intensity predictions")
+  }
+
+  intensities <- as.numeric(unlist(intensity_data))
+  num_fragments <- length(fragments)
+
+  if (length(intensities) == 0 || (num_requests * num_fragments) != length(intensities)) {
+    stop("Koina isotope response has unexpected number of intensities")
+  }
+
+  intensity_matrix <- matrix(intensities, nrow = num_requests, byrow = TRUE)
+
+  list(
+    fragments = fragments,
+    mz = mzs,
+    intensities = intensity_matrix
   )
 }
 
@@ -202,50 +365,6 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
   )
 
   curve_data
-}
-
-build_spectrum_data <- function(curve_df, nce_value) {
-  if (nrow(curve_df) == 0 || is.null(nce_value) || !is.finite(nce_value)) {
-    return(data.frame())
-  }
-
-  metadata <- attr(curve_df, "fragment_metadata")
-
-  if (is.null(metadata)) {
-    return(data.frame())
-  }
-
-  fragments <- metadata$full_fragments %||% metadata$fragments
-  mz_values <- metadata$full_mz %||% metadata$mz %||% rep(NA_real_, length(fragments))
-
-  if (length(fragments) == 0) {
-    return(data.frame())
-  }
-
-  intensities <- fragment_intensity_at_nce(curve_df, nce_value, use_full = TRUE)
-
-  if (length(intensities) == 0) {
-    return(data.frame())
-  }
-
-  ordered_intensities <- intensities[fragments]
-  ordered_intensities[is.na(ordered_intensities)] <- 0
-
-  max_intensity <- suppressWarnings(max(ordered_intensities, na.rm = TRUE))
-  if (!is.finite(max_intensity) || max_intensity <= 0) {
-    normalized <- rep(0, length(ordered_intensities))
-  } else {
-    normalized <- ordered_intensities / max_intensity
-  }
-
-  data.frame(
-    Fragment = fragments,
-    MZ = mz_values,
-    RawIntensity = ordered_intensities,
-    NormalizedIntensity = normalized,
-    NCE = nce_value,
-    stringsAsFactors = FALSE
-  )
 }
 
 fragment_intensity_ranges <- function(curve_df) {
@@ -669,6 +788,8 @@ server <- function(input, output, session) {
   isolation_center_playing <- reactiveVal(FALSE)
   isolation_center_direction <- reactiveVal(1)
   isolation_center_timer <- reactiveTimer(1000)
+  isotope_prediction_table <- reactiveVal(NULL)
+  isolation_offset_grid <- generate_isolation_offsets()
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -697,6 +818,46 @@ server <- function(input, output, session) {
     isolation_center_playing(FALSE)
     isolation_center_direction(1)
     profile
+  }, ignoreNULL = TRUE)
+
+  observeEvent({
+    list(precursor_profile(), input$isolation_width, input$nce)
+  }, {
+    profile <- precursor_profile()
+    req(profile)
+    req(input$peptide, input$charge)
+
+    offsets <- isolation_offset_grid
+    efficiency_matrix <- compute_isolation_efficiency_matrix(profile, input$isolation_width, offsets)
+
+    if (is.null(efficiency_matrix) || nrow(efficiency_matrix) == 0) {
+      isotope_prediction_table(NULL)
+      return()
+    }
+
+    nce_value <- input$nce %||% 30
+    isotope_prediction_table(NULL)
+
+    tryCatch({
+      withProgress(message = "Fetching isolation-aware spectrum", value = 0, {
+        result <- fetch_isotope_intensities(input$peptide, input$charge, nce_value, efficiency_matrix)
+        isotope_prediction_table(list(
+          fragments = result$fragments,
+          mz = result$mz,
+          offsets = offsets,
+          intensities = result$intensities,
+          efficiencies = efficiency_matrix,
+          nce = nce_value
+        ))
+      })
+    }, error = function(e) {
+      showNotification(
+        paste("Unable to fetch isolation-aware spectrum:", conditionMessage(e)),
+        type = "error",
+        duration = 5
+      )
+      isotope_prediction_table(NULL)
+    })
   }, ignoreNULL = TRUE)
 
   output$status <- renderUI({
@@ -816,14 +977,51 @@ server <- function(input, output, session) {
   }, ignoreNULL = FALSE)
 
   spectrum_data <- reactive({
-    curve_data_df <- curve_data()
+    isolation_predictions <- isotope_prediction_table()
 
-    if (nrow(curve_data_df) == 0) {
+    if (is.null(isolation_predictions) || is.null(isolation_predictions$intensities)) {
       return(data.frame())
     }
 
-    nce_value <- input$nce %||% 30
-    build_spectrum_data(curve_data_df, nce_value)
+    offsets <- isolation_predictions$offsets
+    current_offset <- isolation_center_offset() %||% 0
+    idx <- closest_offset_index(offsets, current_offset)
+
+    if (is.na(idx)) {
+      return(data.frame())
+    }
+
+    fragments <- isolation_predictions$fragments
+    mz_values <- isolation_predictions$mz %||% rep(NA_real_, length(fragments))
+    intensity_matrix <- isolation_predictions$intensities
+
+    if (is.null(intensity_matrix) || nrow(intensity_matrix) < idx) {
+      return(data.frame())
+    }
+
+    raw_intensities <- as.numeric(intensity_matrix[idx, , drop = TRUE])
+
+    if (length(raw_intensities) == 0) {
+      return(data.frame())
+    }
+
+    max_intensity <- suppressWarnings(max(raw_intensities, na.rm = TRUE))
+
+    if (!is.finite(max_intensity) || max_intensity <= 0) {
+      normalized <- rep(0, length(raw_intensities))
+    } else {
+      normalized <- raw_intensities / max_intensity
+    }
+
+    data.frame(
+      Fragment = fragments,
+      MZ = mz_values,
+      RawIntensity = raw_intensities,
+      NormalizedIntensity = normalized,
+      NCE = isolation_predictions$nce %||% input$nce %||% 30,
+      IsolationOffset = offsets[[idx]],
+      stringsAsFactors = FALSE
+    )
   })
 
   output$fragment_plot <- renderPlotly({
@@ -896,6 +1094,8 @@ server <- function(input, output, session) {
     }
 
     nce_value <- spectrum_df$NCE[[1]] %||% input$nce %||% 30
+    offset_value <- spectrum_df$IsolationOffset[[1]] %||% 0
+    title_text <- sprintf("Predicted spectrum at %s NCE (offset %+0.3f m/z)", nce_value, offset_value)
 
     tooltip_text <- paste0(
       "Fragment: ", spectrum_df$Fragment,
@@ -909,7 +1109,7 @@ server <- function(input, output, session) {
     ) +
       geom_segment(aes(xend = MZ, y = 0, yend = NormalizedIntensity), color = "#193c55", linewidth = 0.6) +
       labs(
-        title = paste0("Predicted spectrum at ", nce_value, " NCE"),
+        title = title_text,
         x = "m/z",
         y = "Normalized intensity"
       ) +
