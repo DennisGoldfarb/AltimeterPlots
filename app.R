@@ -123,18 +123,18 @@ expand_fragment_coefficients <- function(coeff_matrix, knots, degree = 3) {
 }
 
 evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40), points = 200, max_fragments = 24) {
-  fragments <- predictions$fragments
-  mz_values <- predictions$mz
-  coeff_matrix <- predictions$coefficients
+  all_fragments <- predictions$fragments
+  all_mz_values <- predictions$mz
+  all_coeff_matrix <- predictions$coefficients
   knots <- predictions$knots
 
-  if (length(fragments) == 0 || nrow(coeff_matrix) == 0) {
+  if (length(all_fragments) == 0 || nrow(all_coeff_matrix) == 0) {
     return(data.frame())
   }
 
-  fragments_to_use <- seq_len(min(length(fragments), max_fragments))
-  fragments <- fragments[fragments_to_use]
-  coeff_matrix <- coeff_matrix[fragments_to_use, , drop = FALSE]
+  fragments_to_use <- seq_len(min(length(all_fragments), max_fragments))
+  fragments <- all_fragments[fragments_to_use]
+  coeff_matrix <- all_coeff_matrix[fragments_to_use, , drop = FALSE]
 
   if (length(x_range) != 2 || any(is.na(x_range))) {
     return(data.frame())
@@ -165,10 +165,13 @@ evaluate_fragment_curves <- function(predictions, degree = 3, x_range = c(20, 40
 
   attr(curve_data, "fragment_metadata") <- list(
     fragments = fragments,
-    mz = if (!is.null(mz_values)) mz_values[fragments_to_use] else NULL,
+    mz = if (!is.null(all_mz_values)) all_mz_values[fragments_to_use] else NULL,
     coefficients = coeff_matrix,
     knots = knots,
-    degree = degree
+    degree = degree,
+    full_fragments = all_fragments,
+    full_mz = all_mz_values,
+    full_coefficients = all_coeff_matrix
   )
 
   curve_data
@@ -185,14 +188,14 @@ build_spectrum_data <- function(curve_df, nce_value) {
     return(data.frame())
   }
 
-  fragments <- metadata$fragments
-  mz_values <- metadata$mz %||% rep(NA_real_, length(fragments))
+  fragments <- metadata$full_fragments %||% metadata$fragments
+  mz_values <- metadata$full_mz %||% metadata$mz %||% rep(NA_real_, length(fragments))
 
   if (length(fragments) == 0) {
     return(data.frame())
   }
 
-  intensities <- fragment_intensity_at_nce(curve_df, nce_value)
+  intensities <- fragment_intensity_at_nce(curve_df, nce_value, use_full = TRUE)
 
   if (length(intensities) == 0) {
     return(data.frame())
@@ -240,7 +243,7 @@ fragment_intensity_ranges <- function(curve_df) {
     setNames(fragments)
 }
 
-fragment_intensity_at_nce <- function(curve_df, nce_value) {
+fragment_intensity_at_nce <- function(curve_df, nce_value, use_full = FALSE) {
   if (nrow(curve_df) == 0 || is.null(nce_value) || !is.finite(nce_value)) {
     return(numeric())
   }
@@ -251,8 +254,8 @@ fragment_intensity_at_nce <- function(curve_df, nce_value) {
     return(numeric())
   }
 
-  fragments <- metadata$fragments
-  coeff_matrix <- metadata$coefficients
+  fragments <- if (use_full && !is.null(metadata$full_fragments)) metadata$full_fragments else metadata$fragments
+  coeff_matrix <- if (use_full && !is.null(metadata$full_coefficients)) metadata$full_coefficients else metadata$coefficients
   knots <- metadata$knots
   degree <- metadata$degree %||% 3
 
