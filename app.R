@@ -631,7 +631,7 @@ server <- function(input, output, session) {
       isolation_curve <- data.frame(
         x = x_vals,
         ymin = 0,
-        ymax = y_vals / d
+        ymax = y_vals
       )
     }
 
@@ -658,7 +658,7 @@ server <- function(input, output, session) {
         x = "m/z",
         y = "Relative intensity"
       ) +
-      scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, by = 0.25)) +
+      scale_y_continuous(limits = c(0, 100.05), breaks = seq(0, 100, by = 25)) +
       theme_minimal() +
       theme(
         panel.grid.minor = element_blank(),
@@ -769,7 +769,7 @@ server <- function(input, output, session) {
         x = "m/z",
         y = "Normalized intensity"
       ) +
-      scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, by = 0.25)) +
+      scale_y_continuous(limits = c(0, 100.05), breaks = seq(0, 1, by = 0.25)) +
       theme_minimal() +
       theme(
         panel.grid.major.x = element_blank(),
