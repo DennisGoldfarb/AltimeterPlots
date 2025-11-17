@@ -612,6 +612,64 @@ build_isotope_segment_vectors <- function(peaks) {
   list(x = x, y = y)
 }
 
+build_stem_segment_vectors <- function(x_values, heights) {
+  if (length(x_values) == 0 || length(heights) == 0) {
+    return(list(x = numeric(0), y = numeric(0)))
+  }
+
+  heights <- as.numeric(heights)
+  heights[!is.finite(heights)] <- 0
+
+  x <- rep(x_values, each = 3)
+  y <- numeric(length(x))
+
+  start_points <- seq(1, length(x), by = 3)
+  end_points <- start_points + 1
+  separators <- start_points + 2
+
+  y[start_points] <- 0
+  y[end_points] <- heights
+  x[separators] <- NA_real_
+  y[separators] <- NA_real_
+
+  list(x = x, y = y)
+}
+
+build_spectrum_plot_components <- function(spectrum_df) {
+  if (nrow(spectrum_df) == 0) {
+    return(list(
+      segments = list(x = numeric(0), y = numeric(0)),
+      text = character(0),
+      title = "Predicted spectrum"
+    ))
+  }
+
+  segments <- build_stem_segment_vectors(spectrum_df$MZ, spectrum_df$NormalizedIntensity)
+
+  tooltip_text <- paste0(
+    "Fragment: ", spectrum_df$Fragment,
+    "<br>m/z: ", round(spectrum_df$MZ, 4),
+    "<br>Normalized intensity: ", round(spectrum_df$NormalizedIntensity, 3)
+  )
+
+  text <- rep(NA_character_, length(segments$x))
+
+  if (length(text) > 0) {
+    end_points <- seq(2, length(text), by = 3)
+    text[end_points] <- tooltip_text
+  }
+
+  nce_value <- spectrum_df$NCE[[1]] %||% 30
+  offset_value <- spectrum_df$IsolationOffset[[1]] %||% 0
+  title_text <- sprintf("Predicted spectrum at %s NCE (offset %+0.3f m/z)", nce_value, offset_value)
+
+  list(
+    segments = segments,
+    text = text,
+    title = title_text
+  )
+}
+
 build_isotope_plot_components <- function(profile, width, center_offset) {
   distribution <- profile$distribution
   monoisotopic_mz <- profile$monoisotopic_mz
@@ -790,6 +848,8 @@ server <- function(input, output, session) {
   isolation_center_timer <- reactiveTimer(1000)
   isotope_prediction_table <- reactiveVal(NULL)
   isolation_offset_grid <- generate_isolation_offsets()
+  session$userData$spectrum_plot_ready <- FALSE
+  session$userData$spectrum_trace_indices <- NULL
 
   predictions <- eventReactive(input$submit, {
     req(input$peptide)
@@ -1087,43 +1147,91 @@ server <- function(input, output, session) {
   })
 
   output$spectrum_plot <- renderPlotly({
-    spectrum_df <- spectrum_data()
+    session$userData$spectrum_plot_ready <- FALSE
+    session$userData$spectrum_trace_indices <- NULL
 
-    if (nrow(spectrum_df) == 0) {
-      return(NULL)
-    }
+    plot <- plot_ly()
 
-    nce_value <- spectrum_df$NCE[[1]] %||% input$nce %||% 30
-    offset_value <- spectrum_df$IsolationOffset[[1]] %||% 0
-    title_text <- sprintf("Predicted spectrum at %s NCE (offset %+0.3f m/z)", nce_value, offset_value)
-
-    tooltip_text <- paste0(
-      "Fragment: ", spectrum_df$Fragment,
-      "<br>m/z: ", round(spectrum_df$MZ, 4),
-      "<br>Normalized intensity: ", round(spectrum_df$NormalizedIntensity, 3)
+    plot <- plot %>% add_trace(
+      x = ensure_plotly_vector(NA_real_),
+      y = ensure_plotly_vector(NA_real_),
+      type = "scatter",
+      mode = "lines",
+      line = list(color = "#193c55", width = 2),
+      hoverinfo = "text",
+      text = "",
+      name = "Predicted peaks"
     )
 
-    plot <- ggplot(
-      spectrum_df,
-      aes(x = MZ, y = NormalizedIntensity, text = tooltip_text)
-    ) +
-      geom_segment(aes(xend = MZ, y = 0, yend = NormalizedIntensity), color = "#193c55", linewidth = 0.6) +
-      labs(
-        title = title_text,
-        x = "m/z",
-        y = "Normalized intensity"
-      ) +
-      scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, by = 0.25)) +
-      theme_minimal() +
-      theme(
-        panel.grid.major.x = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.text = element_text(color = "#193c55"),
-        axis.title = element_text(color = "#193c55")
+    plot <- plot %>% layout(
+      title = "Predicted spectrum",
+      xaxis = list(title = "m/z"),
+      yaxis = list(title = "Normalized intensity", range = c(0, 1.05)),
+      hovermode = "x",
+      showlegend = FALSE,
+      margin = list(t = 40)
+    )
+
+    session$userData$spectrum_trace_indices <- list(peaks = 0)
+    session$userData$spectrum_plot_ready <- TRUE
+
+    plot
+  })
+
+  observeEvent(spectrum_data(), {
+    traces <- session$userData$spectrum_trace_indices
+
+    if (is.null(traces) || is.null(traces$peaks) || !isTRUE(session$userData$spectrum_plot_ready)) {
+      return()
+    }
+
+    spectrum_df <- spectrum_data()
+    proxy <- plotlyProxy("spectrum_plot", session)
+
+    if (nrow(spectrum_df) == 0) {
+      proxy <- plotlyProxyInvoke(
+        proxy,
+        "restyle",
+        list(
+          x = wrap_restyle_vector(NA_real_),
+          y = wrap_restyle_vector(NA_real_),
+          text = wrap_restyle_vector(NA_character_)
+        ),
+        list(traces$peaks)
       )
 
-    ggplotly(plot, tooltip = c("text"))
-  })
+      plotlyProxyInvoke(
+        proxy,
+        "relayout",
+        list(title = list(text = "Predicted spectrum"))
+      )
+
+      return()
+    }
+
+    components <- build_spectrum_plot_components(spectrum_df)
+
+    proxy <- plotlyProxyInvoke(
+      proxy,
+      "restyle",
+      list(
+        x = wrap_restyle_vector(components$segments$x),
+        y = wrap_restyle_vector(components$segments$y),
+        text = wrap_restyle_vector(components$text)
+      ),
+      list(traces$peaks)
+    )
+
+    plotlyProxyInvoke(
+      proxy,
+      "relayout",
+      list(
+        title = list(text = components$title),
+        xaxis = list(title = "m/z"),
+        yaxis = list(title = "Normalized intensity", range = c(0, 1.05))
+      )
+    )
+  }, ignoreNULL = FALSE)
 
   observeEvent(input$nce_increment, {
     current <- isolate(input$nce)
