@@ -111,16 +111,11 @@ compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_rela
   stopifnot(is.character(sequence), length(sequence) == 1)
   stopifnot(is.numeric(charge), length(charge) == 1, charge > 0)
 
-  composition <- tryCatch(
-    OrgMassSpecR::ConvertPeptide(sequence, output = "elements", IAA = TRUE),
-    error = function(e) NULL
-  )
+  composition <- OrgMassSpecR::ConvertPeptide(sequence, output = "elements", IAA = TRUE)
 
   if (is.null(composition) || length(composition) == 0) {
     stop("Unable to determine elemental composition for peptide")
   }
-
-  composition$H <- (composition$H %||% 0) + charge
 
   distribution <- OrgMassSpecR::IsotopicDistribution(formula = composition, charge = charge)
 
@@ -128,28 +123,11 @@ compute_isotope_profile <- function(sequence, charge, max_isotopes = 8, min_rela
     stop("Unable to compute isotopic distribution for peptide")
   }
 
-  distribution <- distribution[order(distribution$mass), , drop = FALSE]
   distribution <- distribution[seq_len(min(nrow(distribution), max_isotopes)), , drop = FALSE]
-  max_abundance <- suppressWarnings(max(distribution$abundance, na.rm = TRUE))
-
-  if (!is.finite(max_abundance) || max_abundance <= 0) {
-    stop("Invalid isotope abundances returned")
-  }
-
-  distribution$Relative <- distribution$abundance / max_abundance
-  distribution$Isotope <- seq_len(nrow(distribution)) - 1
-  distribution <- distribution[distribution$Relative >= min_relative | distribution$Isotope == 0, , drop = FALSE]
-
-  if (nrow(distribution) == 0) {
-    stop("Isotope peaks filtered out")
-  }
-
-  distribution$Mz <- (distribution$mass + charge * proton_mass) / charge
-  distribution$Label <- paste0("M+", distribution$Isotope)
 
   list(
     distribution = distribution,
-    monoisotopic_mz = distribution$Mz[[1]],
+    monoisotopic_mz = distribution$mz[[1]],
     charge = charge
   )
 }
@@ -543,7 +521,6 @@ ui <- fluidPage(
       uiOutput("status"),
       h4("Precursor isotope envelope"),
       plotlyOutput("isotope_plot", height = "300px"),
-      uiOutput("isotope_summary"),
       fluidRow(
         column(
           width = 6,
@@ -586,21 +563,9 @@ server <- function(input, output, session) {
   precursor_profile <- eventReactive(input$submit, {
     req(input$peptide, input$charge)
 
-    tryCatch(
-      {
-        profile <- compute_isotope_profile(input$peptide, input$charge)
-        profile$message <- NULL
-        profile
-      },
-      error = function(e) {
-        list(
-          distribution = data.frame(),
-          monoisotopic_mz = NA_real_,
-          charge = input$charge,
-          message = conditionMessage(e)
-        )
-      }
-    )
+    profile <- compute_isotope_profile(input$peptide, input$charge)
+    profile$message <- NULL
+    profile
   }, ignoreNULL = TRUE)
 
   output$status <- renderUI({
@@ -634,22 +599,12 @@ server <- function(input, output, session) {
 
     distribution <- profile$distribution
 
-    validate(
-      need(nrow(distribution) > 0, profile$message %||% "Isotope distribution unavailable.")
-    )
-
     center <- profile$monoisotopic_mz
     width <- input$isolation_width %||% 0
     half_width <- max(0, width) / 2
-    validate(need(is.finite(center), "Invalid monoisotopic m/z"))
 
     window_bounds <- c(center - half_width, center + half_width)
-    distribution$InsideWindow <- distribution$Mz >= window_bounds[1] & distribution$Mz <= window_bounds[2]
-    distribution$tooltip <- paste0(
-      "Isotope: ", distribution$Label,
-      "<br>m/z: ", round(distribution$Mz, 4),
-      "<br>Relative intensity: ", round(distribution$Relative, 3)
-    )
+    distribution$InsideWindow <- distribution$mz >= window_bounds[1] & distribution$mz <= window_bounds[2]
 
     shading_df <- data.frame(
       xmin = window_bounds[1],
@@ -658,7 +613,7 @@ server <- function(input, output, session) {
       ymax = 1.05
     )
 
-    plot <- ggplot(distribution, aes(x = Mz, y = Relative, text = tooltip)) +
+    plot <- ggplot(distribution, aes(x = mz, y = percent)) +
       geom_rect(
         data = shading_df,
         aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
@@ -667,13 +622,8 @@ server <- function(input, output, session) {
         alpha = 0.4
       ) +
       geom_segment(
-        aes(xend = Mz, yend = 0, color = InsideWindow),
-        linewidth = 0.8
-      ) +
-      geom_point(aes(color = InsideWindow), size = 2.5) +
-      scale_color_manual(
-        values = c(`TRUE` = "#1b6ca8", `FALSE` = "#7a7a7a"),
-        guide = "none"
+        aes(xend = mz, yend = 0, color = InsideWindow),
+        linewidth = 0.8, color = "#193c55"
       ) +
       labs(
         title = paste0("Theoretical isotope distribution (z = ", profile$charge, "+)"),
@@ -691,43 +641,6 @@ server <- function(input, output, session) {
       )
 
     ggplotly(plot, tooltip = c("text"))
-  })
-
-  output$isotope_summary <- renderUI({
-    profile <- precursor_profile()
-
-    if (is.null(profile)) {
-      return(NULL)
-    }
-
-    distribution <- profile$distribution
-
-    if (nrow(distribution) == 0) {
-      return(div(class = "text-danger", profile$message %||% "Isotope distribution unavailable."))
-    }
-
-    width <- input$isolation_width %||% 0
-    center <- profile$monoisotopic_mz
-    half_width <- max(0, width) / 2
-    window_bounds <- c(center - half_width, center + half_width)
-    inside_labels <- distribution$Label[distribution$Mz >= window_bounds[1] & distribution$Mz <= window_bounds[2]]
-    coverage_text <- if (length(inside_labels) == 0) {
-      "No isotopes fall inside the isolation window."
-    } else {
-      paste0("Isotopes captured: ", paste(inside_labels, collapse = ", "))
-    }
-
-    tagList(
-      div(
-        class = "text-muted",
-        sprintf("Monoisotopic m/z (z = %s+): %.4f", profile$charge, center)
-      ),
-      div(
-        class = "text-muted",
-        sprintf("Isolation window (width %.2f m/z): %.4f – %.4f", width, window_bounds[1], window_bounds[2])
-      ),
-      div(class = "text-muted", coverage_text)
-    )
   })
 
   spectrum_data <- reactive({
